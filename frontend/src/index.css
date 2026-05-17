@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background-color: #0a0a0a;
+  color: #ffffff;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+  overflow: hidden; /* Keeps our app feeling like a native full-screen mobile app */
+}

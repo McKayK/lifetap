@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    container_name: lifetap-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - lifetap-db:/app/data
+      # ADD THIS LINE BELOW:
+      - ./custom-art:/app/public/custom-art
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: lifetap-frontend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+volumes:
+  lifetap-db:
+    driver: local
