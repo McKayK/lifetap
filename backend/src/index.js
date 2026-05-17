@@ -9,22 +9,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. Setup the upload directory on the server disk
+// 1. Setup the upload storage path on disk
 const uploadDir = path.join(__dirname, "../public/custom-art");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// 2. Broadcast everything inside that folder to the web
+// 2. Serve the static images folder to the frontend
 app.use("/custom-art", express.static(uploadDir));
 
-// 3. Configure file saving mechanics with safety guards
+// 3. Configure secure storage parameters
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    // Generates a unique timestamped file name to prevent duplicate overwrites
+    // Unique timestamp prevents files with identical names from overwriting each other
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, uniqueSuffix + path.extname(file.originalname));
   },
@@ -33,18 +33,16 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // Strict 5MB maximum file size limit per image upload
+    fileSize: 5 * 1024 * 1024, // Strict 5MB size guard per upload
   },
 });
 
-// 4. Connect to the SQLite Database File
+// 4. Connect Database
 const dbPath = path.join(__dirname, "../data/database.sqlite");
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) console.error("Database connection error:", err);
-  else console.log("Connected to SQLite database.");
 });
 
-// Initialize clean tables if they are fresh
 db.serialize(() => {
   db.run(
     `CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)`,
@@ -59,7 +57,7 @@ db.serialize(() => {
   )`);
 });
 
-// --- CORE API ROUTING ENDPOINTS ---
+// --- API ENDPOINTS ---
 
 app.get("/api/players", (req, res) => {
   db.all("SELECT * FROM players", [], (err, rows) => {
@@ -87,7 +85,7 @@ app.get("/api/players/:id/favorites", (req, res) => {
   );
 });
 
-// NEW: Native Camera Roll Upload Route
+// Direct Multi-part File Upload Endpoint
 app.post(
   "/api/players/:id/upload-favorite",
   upload.single("image"),
@@ -95,10 +93,9 @@ app.post(
     const playerId = req.params.id;
     const { commander_name } = req.body;
 
-    if (!req.file)
-      return res.status(400).json({ error: "No image file uploaded" });
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // Dynamically uses whatever domain or IP you are using to access the app
+    // Dynamically uses whatever domain/IP you are using to browse the app
     const domain = req.get("host");
     const protocol = req.protocol;
     const image_url = `${protocol}://${domain}/custom-art/${req.file.filename}`;
@@ -119,7 +116,6 @@ app.post(
   },
 );
 
-// Scryfall route compatibility fallback
 app.post("/api/players/:id/favorites", (req, res) => {
   const { commander_name, image_url, scryfall_id } = req.body;
   db.run(
@@ -132,4 +128,4 @@ app.post("/api/players/:id/favorites", (req, res) => {
   );
 });
 
-app.listen(5000, () => console.log("Backend server running on port 5000"));
+app.listen(5000, () => console.log("Backend running on port 5000"));

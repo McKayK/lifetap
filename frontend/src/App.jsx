@@ -490,47 +490,50 @@ export default function App() {
                 </div>
 
                 {/* ADD CUSTOM PROXY ART FORM */}
+                {/* ADD CUSTOM PROXY ART FORM */}
                 <div className="border-t border-neutral-800/60 pt-3">
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
-                    Add Custom Proxy Art
+                    Upload Custom Proxy Art
                   </h3>
                   <form
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const name = e.target.elements.customName.value.trim();
-                      const url = e.target.elements.customUrl.value.trim();
-                      if (!name || !url) return;
+                      const file = e.target.elements.customFile.files[0];
+                      if (!name || !file) return;
 
                       const currentSlot = slots.find(
                         (s) => s.id === activeMenuSlot,
                       );
+
+                      // FormData lets us pack physical binary files natively
+                      const formData = new FormData();
+                      formData.append("commander_name", name);
+                      formData.append("image", file);
+
                       try {
                         const res = await fetch(
-                          `${BACKEND_URL}/players/${currentSlot.player.id}/favorites`,
+                          `${BACKEND_URL}/players/${currentSlot.player.id}/upload-favorite`,
                           {
                             method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              commander_name: name,
-                              image_url: url,
-                              scryfall_id: "custom",
-                            }),
+                            body: formData,
                           },
                         );
                         if (res.ok) {
+                          const savedFavorite = await res.json();
                           e.target.reset();
                           fetchFavorites(currentSlot.player.id);
                           setSlots(
                             slots.map((s) =>
                               s.id === activeMenuSlot
-                                ? { ...s, bgImage: url }
+                                ? { ...s, bgImage: savedFavorite.image_url }
                                 : s,
                             ),
                           );
                           setActiveMenuSlot(null);
                         }
                       } catch (err) {
-                        console.error("Error saving custom art:", err);
+                        console.error("Upload error:", err);
                       }
                     }}
                     className="flex flex-col gap-2 pointer-events-auto"
@@ -538,23 +541,23 @@ export default function App() {
                     <input
                       name="customName"
                       type="text"
-                      placeholder="Commander Name (e.g., Custom Grimgrin)"
+                      placeholder="Commander Name (e.g., Watercolor Grimgrin)"
                       className="bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs outline-none focus:border-neutral-600 text-white"
                       required
                     />
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 items-center">
                       <input
-                        name="customUrl"
-                        type="url"
-                        placeholder="Paste Image URL (jpg, png...)"
-                        className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs outline-none focus:border-neutral-600 text-white"
+                        name="customFile"
+                        type="file"
+                        accept="image/*"
+                        className="flex-1 text-xs text-neutral-400 file:mr-2 file:py-1 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-neutral-800 file:text-neutral-200 file:hover:bg-neutral-700 cursor-pointer"
                         required
                       />
                       <button
                         type="submit"
-                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition-all"
+                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition-all shadow-md"
                       >
-                        Save
+                        Upload
                       </button>
                     </div>
                   </form>
