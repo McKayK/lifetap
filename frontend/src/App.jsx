@@ -7,7 +7,6 @@ import {
   Star,
   Search,
   Loader2,
-  RefreshCw,
   Dices,
   Layers,
   Users,
@@ -37,7 +36,10 @@ export default function App() {
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
-  const BACKEND_URL = "https://life.mckaykleinman.com/api";
+  const BACKEND_URL = "http://localhost:5000/api";
+  // const BACKEND_URL = "https://life.mckaykleinman.com/api";
+
+  const visibleSlots = slots.slice(0, playerCount);
 
   useEffect(() => {
     fetchPlayers();
@@ -115,11 +117,15 @@ export default function App() {
   const handleSelectCommander = async (card) => {
     const currentSlot = slots.find((s) => s.id === activeMenuSlot);
     if (!currentSlot || !currentSlot.player) return;
+
     const image_url =
       card.image_uris?.art_crop ||
       card.card_faces?.[0]?.image_uris?.art_crop ||
+      card.card_faces?.[1]?.image_uris?.art_crop ||
       "";
-    if (!image_url) return alert("Could not extract art.");
+
+    if (!image_url)
+      return alert("Could not extract art asset from Scryfall metadata.");
 
     try {
       await fetch(`${BACKEND_URL}/players/${currentSlot.player.id}/favorites`, {
@@ -165,30 +171,59 @@ export default function App() {
     );
   };
 
-  const startNewGame = () => {
-    setSlots(slots.map((s) => ({ ...s, life: 40 })));
-    setStartingPlayerId(null);
+  const handleNewGameAndRoll = () => {
     setShowControlHub(false);
-  };
-
-  const rollForFirstTurn = () => {
+    setSlots(slots.map((s) => ({ ...s, life: 40 })));
     setIsRolling(true);
     setStartingPlayerId(null);
 
     let counter = 0;
+    const maxTicks = 10;
+
     const interval = setInterval(() => {
-      const randomIdx = Math.floor(Math.random() * playerCount) + 1;
-      setStartingPlayerId(randomIdx);
+      // Pull strictly from the pool of active, visible layout slots
+      const randomSlot =
+        visibleSlots[Math.floor(Math.random() * visibleSlots.length)];
+      setStartingPlayerId(randomSlot.id);
       counter++;
 
-      if (counter > 8) {
+      if (counter >= maxTicks) {
         clearInterval(interval);
-        const finalWinner = Math.floor(Math.random() * playerCount) + 1;
-        setStartingPlayerId(finalWinner);
+        const finalSlot =
+          visibleSlots[Math.floor(Math.random() * visibleSlots.length)];
+        setStartingPlayerId(finalSlot.id);
         setIsRolling(false);
-        setShowControlHub(false);
       }
     }, 150);
+  };
+
+  const handleRecordWin = async (playerId) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/players/${playerId}/win`, {
+        method: "POST",
+      });
+
+      if (res.ok) {
+        fetchPlayers();
+        setSlots(
+          slots.map((s) => {
+            if (s.player && s.player.id === playerId) {
+              return {
+                ...s,
+                player: {
+                  ...s.player,
+                  wins: (s.player.wins || 0) + 1,
+                },
+              };
+            }
+            return s;
+          }),
+        );
+        setActiveMenuSlot(null);
+      }
+    } catch (err) {
+      console.error("Error recording match win:", err);
+    }
   };
 
   const getActiveSlotPlayer = () =>
@@ -198,8 +233,6 @@ export default function App() {
     if (playerCount === 2) return "grid-cols-1 grid-rows-2";
     return "grid-cols-2 grid-rows-2";
   };
-
-  const visibleSlots = slots.slice(0, playerCount);
 
   return (
     <div
@@ -220,7 +253,6 @@ export default function App() {
                 : "border-neutral-800"
             } ${isRotated ? "rotate-180" : ""} ${is3PlayerSpannedRow ? "col-span-2" : ""}`}
           >
-            {/* Background Image - Dynamic Automatic Autofit */}
             {slot.bgImage && (
               <div
                 className={`absolute inset-0 bg-cover transition-all duration-700 ${
@@ -228,12 +260,12 @@ export default function App() {
                 }`}
                 style={{
                   backgroundImage: `url(${slot.bgImage})`,
-                  filter: "brightness(0.4) contrast(1.1)",
+                  filter: "brightness(0.35) contrast(1.15)",
                 }}
               />
             )}
 
-            {/* Tap Targets */}
+            {/* Tap Targets (Always Active) */}
             <div className="absolute inset-0 flex">
               <div
                 onClick={() => updateLife(slot.id, -1)}
@@ -276,7 +308,7 @@ export default function App() {
                 </span>
               </div>
 
-              {/* BIG MODIFIER BUTTONS */}
+              {/* BIG MODIFIER BUTTONS (Always Active) */}
               <div className="flex gap-6 pointer-events-auto mb-2">
                 <button
                   onClick={() => updateLife(slot.id, -5)}
@@ -292,6 +324,18 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* --- DEFEATED OVERLAY (Passes clicks through to buttons underneath) --- */}
+            {slot.life <= 0 && (
+              <div className="absolute inset-0 z-20 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-1 pointer-events-none select-none animate-fade-in">
+                <span className="text-6xl filter drop-shadow-[0_0_15px_rgba(0,0,0,1)] opacity-90">
+                  💀
+                </span>
+                <span className="text-sm font-black uppercase tracking-widest text-red-600 drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
+                  Defeated
+                </span>
+              </div>
+            )}
           </div>
         );
       })}
@@ -322,7 +366,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* POD SIZE SELECTION CAPSULES */}
+            {/* POD SIZE SELECTION */}
             <div>
               <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
                 <Users size={12} /> Pod Size
@@ -342,27 +386,19 @@ export default function App() {
                         : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
                     }`}
                   >
-                    {num} Players
+                    {num} P
                   </button>
                 ))}
               </div>
             </div>
 
             <button
-              onClick={rollForFirstTurn}
+              onClick={handleNewGameAndRoll}
               disabled={isRolling}
-              className="w-full py-3 bg-amber-600 hover:bg-amber-500 disabled:bg-neutral-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+              className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
             >
               <Dices size={18} className={isRolling ? "animate-spin" : ""} />
-              {isRolling ? "Rolling Selection..." : "Roll Who Goes First"}
-            </button>
-
-            <button
-              onClick={startNewGame}
-              className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-red-400 font-bold rounded-xl flex items-center justify-center gap-2 text-sm border border-red-500/10 active:scale-95 transition-all"
-            >
-              <RefreshCw size={16} />
-              Reset All Life to 40
+              {isRolling ? "Rolling Turn One..." : "Reset & Roll First"}
             </button>
           </div>
         </div>
@@ -399,7 +435,7 @@ export default function App() {
                     />
                     <button
                       type="submit"
-                      className="p-2 bg-blue-600 hover:bg-blue-50 text-white rounded-xl transition-all"
+                      className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
                     >
                       <Plus size={18} />
                     </button>
@@ -419,9 +455,12 @@ export default function App() {
                         <button
                           key={p.id}
                           onClick={() => assignPlayerToSlot(activeMenuSlot, p)}
-                          className="w-full text-left px-4 py-2 rounded-lg text-sm bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-all"
+                          className="w-full flex justify-between items-center px-4 py-2 rounded-lg text-sm bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-all group"
                         >
-                          {p.name}
+                          <span>{p.name}</span>
+                          <span className="text-xs bg-neutral-900 px-2 py-0.5 rounded-md border border-neutral-700/50 text-amber-400 font-medium group-hover:border-amber-500/30 transition-all">
+                            🏆 {p.wins || 0}
+                          </span>
                         </button>
                       ))
                     )}
@@ -430,24 +469,39 @@ export default function App() {
               </>
             ) : (
               <div className="flex flex-col gap-4">
-                <div className="flex justify-between items-center bg-neutral-950 px-4 py-2 border border-neutral-800 rounded-xl">
-                  <span className="text-sm font-bold text-blue-400">
-                    Profile: {getActiveSlotPlayer().name}
-                  </span>
-                  <button
-                    onClick={() =>
-                      setSlots(
-                        slots.map((s) =>
-                          s.id === activeMenuSlot
-                            ? { ...s, player: null, bgImage: "" }
-                            : s,
-                        ),
-                      )
-                    }
-                    className="text-xs text-red-400 underline hover:text-red-300 pointer-events-auto"
-                  >
-                    Unlink Profile
-                  </button>
+                <div className="flex flex-col gap-2 bg-neutral-950 p-3 border border-neutral-800 rounded-xl">
+                  <div className="flex justify-between items-center border-b border-neutral-800/60 pb-2">
+                    <span className="text-sm font-bold text-blue-400">
+                      Profile: {getActiveSlotPlayer().name}
+                    </span>
+                    <span className="text-xs text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                      🏆 {getActiveSlotPlayer().wins || 0} Wins
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-1">
+                    <button
+                      onClick={() => handleRecordWin(getActiveSlotPlayer().id)}
+                      className="text-xs bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg shadow-md transition-all active:scale-95"
+                    >
+                      Record Match Win 🎉
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        setSlots(
+                          slots.map((s) =>
+                            s.id === activeMenuSlot
+                              ? { ...s, player: null, bgImage: "" }
+                              : s,
+                          ),
+                        )
+                      }
+                      className="text-xs text-neutral-400 underline hover:text-red-400 transition-colors"
+                    >
+                      Unlink Profile
+                    </button>
+                  </div>
                 </div>
 
                 {/* FAVORITES SHELF */}
@@ -490,7 +544,6 @@ export default function App() {
                 </div>
 
                 {/* ADD CUSTOM PROXY ART FORM */}
-                {/* ADD CUSTOM PROXY ART FORM */}
                 <div className="border-t border-neutral-800/60 pt-3">
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
                     Upload Custom Proxy Art
@@ -506,7 +559,6 @@ export default function App() {
                         (s) => s.id === activeMenuSlot,
                       );
 
-                      // FormData lets us pack physical binary files natively
                       const formData = new FormData();
                       formData.append("commander_name", name);
                       formData.append("image", file);
@@ -581,7 +633,7 @@ export default function App() {
                     />
                     <button
                       type="submit"
-                      className="p-2 bg-blue-600 hover:bg-blue-50 text-white rounded-xl transition-all"
+                      className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
                     >
                       {isSearching ? (
                         <Loader2 size={18} className="animate-spin" />

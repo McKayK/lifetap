@@ -44,9 +44,20 @@ const db = new sqlite3.Database(dbPath, (err) => {
 });
 
 db.serialize(() => {
+  // 1. Create players table if it doesn't exist
   db.run(
     `CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)`,
   );
+
+  // EXTRA SAFE: Add the wins column to players if it doesn't exist yet
+  db.run(`ALTER TABLE players ADD COLUMN wins INTEGER DEFAULT 0`, (err) => {
+    // We safely catch the error here because SQLite throws an error if the column ALREADY exists
+    if (err && !err.message.includes("duplicate column name")) {
+      console.error("Error updating players schema:", err.message);
+    }
+  });
+
+  // 2. Create favorites table
   db.run(`CREATE TABLE IF NOT EXISTS favorites (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
     player_id INTEGER, 
@@ -126,6 +137,33 @@ app.post("/api/players/:id/favorites", (req, res) => {
       res.json({ id: this.lastID });
     },
   );
+});
+
+// Increment a specific player's win total
+app.post("/api/players/:id/win", (req, res) => {
+  const playerId = req.params.id;
+  db.run(
+    "UPDATE players SET wins = COALESCE(wins, 0) + 1 WHERE id = ?",
+    [playerId],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({
+        success: true,
+        message: `Win recorded for player ID ${playerId}`,
+      });
+    },
+  );
+});
+
+// Optional: Reset all win counts back to 0 across the board
+app.post("/api/players/reset-wins", (req, res) => {
+  db.run("UPDATE players SET wins = 0", [], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({
+      success: true,
+      message: "All player win histories have been reset.",
+    });
+  });
 });
 
 app.listen(5000, () => console.log("Backend running on port 5000"));
