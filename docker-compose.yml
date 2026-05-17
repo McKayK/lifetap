@@ -16,7 +16,7 @@ services:
     build: ./frontend
     container_name: lifetap-frontend
     ports:
-      - "8080:80"
+      - "8082:80"
     restart: unless-stopped
     depends_on:
       - backend
