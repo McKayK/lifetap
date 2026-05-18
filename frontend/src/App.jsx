@@ -705,7 +705,7 @@ export default function App() {
                     e.stopPropagation();
                     setActiveMenuSlot(slot.id);
                   }}
-                  className={`p-3 bg-black/50 border rounded-full transition-all flex-shrink-0 ${
+                  className={`p-3 bg-black/50 border rounded-full transition-all flex-shrink-0 pointer-events-auto ${
                     isStartingPlayer
                       ? "border-yellow-500/30 text-yellow-500/70"
                       : "border-neutral-700/30 text-neutral-400"
