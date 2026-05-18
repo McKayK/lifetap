@@ -14,16 +14,45 @@ import {
 
 export default function App() {
   const [slots, setSlots] = useState([
-    { id: 1, label: "Slot 1", player: null, life: 40, bgImage: "" },
-    { id: 2, label: "Slot 2", player: null, life: 40, bgImage: "" },
-    { id: 3, label: "Slot 3", player: null, life: 40, bgImage: "" },
-    { id: 4, label: "Slot 4", player: null, life: 40, bgImage: "" },
+    {
+      id: 1,
+      label: "Slot 1",
+      player: null,
+      life: 40,
+      bgImage: "",
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+    },
+    {
+      id: 2,
+      label: "Slot 2",
+      player: null,
+      life: 40,
+      bgImage: "",
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+    },
+    {
+      id: 3,
+      label: "Slot 3",
+      player: null,
+      life: 40,
+      bgImage: "",
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+    },
+    {
+      id: 4,
+      label: "Slot 4",
+      player: null,
+      life: 40,
+      bgImage: "",
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+    },
   ]);
 
   const [playerCount, setPlayerCount] = useState(4);
   const [dbPlayers, setDbPlayers] = useState([]);
   const [activeMenuSlot, setActiveMenuSlot] = useState(null);
   const [newPlayerName, setNewPlayerName] = useState("");
+  const [activeCmdModifier, setActiveCmdModifier] = useState(null);
 
   // Scryfall & Favorites States
   const [searchQuery, setSearchQuery] = useState("");
@@ -36,8 +65,8 @@ export default function App() {
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
-  const BACKEND_URL = "http://localhost:5000/api";
-  // const BACKEND_URL = "https://life.mckaykleinman.com/api";
+  //   const BACKEND_URL = "http://localhost:5000/api";
+  const BACKEND_URL = "https://life.mckaykleinman.com/api";
 
   const visibleSlots = slots.slice(0, playerCount);
 
@@ -171,17 +200,42 @@ export default function App() {
     );
   };
 
+  const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
+    setSlots(
+      slots.map((s) => {
+        if (s.id === targetSlotId) {
+          const currentDamage = s.commanderDamage[opponentSlotId] || 0;
+          const newDamage = Math.max(0, currentDamage + amount);
+          return {
+            ...s,
+            life: s.life - amount,
+            commanderDamage: {
+              ...s.commanderDamage,
+              [opponentSlotId]: newDamage,
+            },
+          };
+        }
+        return s;
+      }),
+    );
+  };
+
   const handleNewGameAndRoll = () => {
     setShowControlHub(false);
-    setSlots(slots.map((s) => ({ ...s, life: 40 })));
-    setIsRolling(true);
+    setSlots(
+      slots.map((s) => ({
+        ...s,
+        life: 40,
+        commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+      })),
+    );
     setStartingPlayerId(null);
+    setIsRolling(true);
 
     let counter = 0;
     const maxTicks = 10;
 
     const interval = setInterval(() => {
-      // Pull strictly from the pool of active, visible layout slots
       const randomSlot =
         visibleSlots[Math.floor(Math.random() * visibleSlots.length)];
       setStartingPlayerId(randomSlot.id);
@@ -202,7 +256,6 @@ export default function App() {
       const res = await fetch(`${BACKEND_URL}/players/${playerId}/win`, {
         method: "POST",
       });
-
       if (res.ok) {
         fetchPlayers();
         setSlots(
@@ -210,10 +263,7 @@ export default function App() {
             if (s.player && s.player.id === playerId) {
               return {
                 ...s,
-                player: {
-                  ...s.player,
-                  wins: (s.player.wins || 0) + 1,
-                },
+                player: { ...s.player, wins: (s.player.wins || 0) + 1 },
               };
             }
             return s;
@@ -234,15 +284,52 @@ export default function App() {
     return "grid-cols-2 grid-rows-2";
   };
 
+  const getShortName = (slot) => {
+    if (slot.player) {
+      // If the name is 5 letters or less, show the whole thing. Otherwise, truncate cleanly.
+      return slot.player.name.length <= 7
+        ? slot.player.name
+        : `${slot.player.name.substring(0, 6)}…`;
+    }
+    return `P${slot.id}`;
+  };
+
+  const getCommanderName = (slot) => {
+    if (!slot.bgImage) return "";
+
+    // 1. Check if it's in the recently fetched playerFavorites array
+    const favorite = playerFavorites.find((f) => f.image_url === slot.bgImage);
+    if (favorite) return favorite.commander_name;
+
+    // 2. Fallback: Parse a readable name from common Scryfall image URL paths if it's a direct card link
+    if (slot.bgImage.includes("scryfall")) {
+      try {
+        // Scryfall art-crop URLs often contain metadata or IDs, but if you want a reliable fallback
+        // without extra state, we'll cleanly display "Commander Art" or a shorter string if unfound.
+        return "Commander";
+      } catch {
+        return "Commander";
+      }
+    }
+
+    return "Custom Art";
+  };
+
   return (
     <div
       className={`h-screen w-screen grid bg-neutral-950 p-1 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
+      {/* 1. PLAYERS GRID LAYOUT */}
       {visibleSlots.map((slot, index) => {
         const isRotated = playerCount === 2 ? index === 0 : index < 2;
         const displayName = slot.player ? slot.player.name : slot.label;
         const isStartingPlayer = startingPlayerId === slot.id;
         const is3PlayerSpannedRow = playerCount === 3 && index === 2;
+
+        const lethalCommanderDamage = Object.values(slot.commanderDamage).some(
+          (dmg) => dmg >= 21,
+        );
+        const isDefeated = slot.life <= 0 || lethalCommanderDamage;
 
         return (
           <div
@@ -265,7 +352,7 @@ export default function App() {
               />
             )}
 
-            {/* Tap Targets (Always Active) */}
+            {/* Tap Targets */}
             <div className="absolute inset-0 flex">
               <div
                 onClick={() => updateLife(slot.id, -1)}
@@ -279,7 +366,8 @@ export default function App() {
 
             {/* UI Content Layer */}
             <div className="relative z-10 pointer-events-none flex flex-col items-center justify-between h-full w-full p-4">
-              <div className="flex justify-between w-full items-center pointer-events-auto">
+              <div className="flex justify-between w-full items-center pointer-events-auto relative">
+                {/* LEFT: Player Name */}
                 <span
                   className={`font-bold text-sm md:text-base tracking-wide flex items-center gap-1 bg-black/50 px-3 py-1 rounded-full backdrop-blur-md border ${
                     isStartingPlayer
@@ -289,6 +377,17 @@ export default function App() {
                 >
                   <User size={14} /> {displayName}
                 </span>
+
+                {/* MIDDLE: Commander Name Badge */}
+                {slot.bgImage && (
+                  <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 bg-black/60 border border-neutral-800 backdrop-blur-md px-3 py-1 rounded-md max-w-[120px] sm:max-w-[180px] truncate shadow-md">
+                    <span className="text-[10px] md:text-xs font-black tracking-wide text-neutral-300 uppercase block truncate">
+                      {getCommanderName(slot)}
+                    </span>
+                  </div>
+                )}
+
+                {/* RIGHT: Settings Button */}
                 <button
                   onClick={() => setActiveMenuSlot(slot.id)}
                   className={`p-2 bg-black/50 hover:bg-black/70 border rounded-full backdrop-blur-md transition-all ${
@@ -301,38 +400,154 @@ export default function App() {
                 </button>
               </div>
 
+              {/* MASSIVE LIFE TOTAL WINDOW (Leaves this perfectly intact below) */}
+
               {/* MASSIVE LIFE TOTAL WINDOW */}
               <div className="flex flex-col items-center justify-center my-auto">
-                <span className="text-7xl sm:text-8xl md:text-9xl font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white select-none tabular-nums">
+                <span className="text-7xl sm:text-8xl md:text-9xl font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums">
                   {slot.life}
                 </span>
               </div>
 
-              {/* BIG MODIFIER BUTTONS (Always Active) */}
-              <div className="flex gap-6 pointer-events-auto mb-2">
-                <button
-                  onClick={() => updateLife(slot.id, -5)}
-                  className="px-5 py-2 bg-black/50 hover:bg-black/70 border border-neutral-700/30 active:scale-95 text-red-400 font-black text-sm rounded-xl backdrop-blur-md transition-all tracking-wider"
-                >
-                  -5
-                </button>
-                <button
-                  onClick={() => updateLife(slot.id, 5)}
-                  className="px-5 py-2 bg-black/50 hover:bg-black/70 border border-neutral-700/30 active:scale-95 text-green-400 font-black text-sm rounded-xl backdrop-blur-md transition-all tracking-wider"
-                >
-                  +5
-                </button>
+              {/* LOWER INTERACTIVE FOOTER */}
+              <div className="w-full flex flex-col items-center gap-2 pointer-events-auto z-30 px-2">
+                {activeCmdModifier &&
+                activeCmdModifier.targetSlotId === slot.id ? (
+                  /* INDIVIDUAL COMMANDER DAMAGE CONTROL PANEL */
+                  <div className="w-full max-w-xs bg-black/80 p-2 rounded-xl border border-neutral-700 backdrop-blur-md flex flex-col gap-2">
+                    <div className="flex items-center justify-between border-b border-neutral-800 pb-1 px-1">
+                      <span className="text-[11px] font-black uppercase tracking-wider text-red-400">
+                        From{" "}
+                        {getShortName(
+                          slots.find(
+                            (s) => s.id === activeCmdModifier.opponentSlotId,
+                          ),
+                        )}
+                        :
+                      </span>
+                      <span className="text-sm text-white bg-neutral-800 px-2 py-0.5 rounded-md font-black tabular-nums">
+                        {slot.commanderDamage[
+                          activeCmdModifier.opponentSlotId
+                        ] || 0}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      <button
+                        onClick={() =>
+                          updateCommanderDamage(
+                            slot.id,
+                            activeCmdModifier.opponentSlotId,
+                            -1,
+                          )
+                        }
+                        className="h-9 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 font-black text-sm rounded-lg border border-neutral-700 active:scale-90 transition-transform"
+                      >
+                        -1
+                      </button>
+                      <button
+                        onClick={() =>
+                          updateCommanderDamage(
+                            slot.id,
+                            activeCmdModifier.opponentSlotId,
+                            1,
+                          )
+                        }
+                        className="h-9 flex items-center justify-center bg-red-600/30 hover:bg-red-600/50 text-red-200 font-black text-sm rounded-lg border border-red-500/30 active:scale-90 transition-transform"
+                      >
+                        +1
+                      </button>
+                      <button
+                        onClick={() => setActiveCmdModifier(null)}
+                        className="h-9 flex items-center justify-center bg-neutral-900 text-neutral-400 hover:text-white rounded-lg border border-neutral-800 transition-colors"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* LIFETAP STYLE 2x2 COMMANDER DAMAGE MATRIX */
+                  <div className="w-full max-w-[240px] grid grid-cols-2 gap-1 bg-black/40 p-1 rounded-xl border border-neutral-800/60 backdrop-blur-sm">
+                    {/* Map all 4 slots into the grid to maintain a solid 2x2 shape */}
+                    {slots.map((opp) => {
+                      // If the slot matches the current player, show a disabled spacer or placeholder
+                      if (opp.id === slot.id) {
+                        return (
+                          <div
+                            key={`self-${opp.id}`}
+                            className="h-8 rounded-lg bg-neutral-950/20 border border-transparent"
+                          />
+                        );
+                      }
+
+                      // Check if this opponent is actually in the current match size
+                      const isOpponentInGame = opp.id <= playerCount;
+                      const amt = slot.commanderDamage[opp.id] || 0;
+
+                      return (
+                        <button
+                          key={opp.id}
+                          disabled={!isOpponentInGame}
+                          onClick={() =>
+                            setActiveCmdModifier({
+                              targetSlotId: slot.id,
+                              opponentSlotId: opp.id,
+                            })
+                          }
+                          className={`h-10 px-2 text-xs font-black rounded-lg transition-all flex items-center justify-between border tabular-nums ${
+                            !isOpponentInGame
+                              ? "bg-neutral-950/40 text-neutral-700 border-neutral-900/30 opacity-20 cursor-not-allowed"
+                              : amt > 0
+                                ? "bg-red-950/60 text-red-200 border-red-700/50 shadow-[inset_0_0_10px_rgba(220,38,38,0.15)]"
+                                : "bg-neutral-900/70 text-neutral-400 border-neutral-800 hover:text-neutral-200"
+                          }`}
+                        >
+                          <span className="tracking-wide truncate max-w-[40px] uppercase text-[10px] opacity-80">
+                            {getShortName(opp)}
+                          </span>
+
+                          {isOpponentInGame && (
+                            <span
+                              className={`text-base font-black tracking-tight ${
+                                amt > 0
+                                  ? "text-red-400 drop-shadow-[0_0_6px_rgba(239,68,68,0.2)]"
+                                  : "text-neutral-500"
+                              }`}
+                            >
+                              {amt}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* BASE MODIFIER BUTTONS */}
+                <div className="flex gap-6 mb-1">
+                  <button
+                    onClick={() => updateLife(slot.id, -5)}
+                    className="px-5 py-1.5 bg-black/50 hover:bg-black/70 border border-neutral-700/30 active:scale-95 text-red-400 font-black text-sm rounded-xl backdrop-blur-md transition-all tracking-wider"
+                  >
+                    -5
+                  </button>
+                  <button
+                    onClick={() => updateLife(slot.id, 5)}
+                    className="px-5 py-1.5 bg-black/50 hover:bg-black/70 border border-neutral-700/30 active:scale-95 text-green-400 font-black text-sm rounded-xl backdrop-blur-md transition-all tracking-wider"
+                  >
+                    +5
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* --- DEFEATED OVERLAY (Passes clicks through to buttons underneath) --- */}
-            {slot.life <= 0 && (
-              <div className="absolute inset-0 z-20 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-1 pointer-events-none select-none animate-fade-in">
-                <span className="text-6xl filter drop-shadow-[0_0_15px_rgba(0,0,0,1)] opacity-90">
+            {/* DEFEATED OVERLAY */}
+            {isDefeated && (
+              <div className="absolute inset-0 z-20 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center gap-1 pointer-events-none select-none">
+                <span className="text-5xl filter drop-shadow-[0_0_15px_rgba(0,0,0,1)] opacity-90">
                   💀
                 </span>
-                <span className="text-sm font-black uppercase tracking-widest text-red-600 drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
-                  Defeated
+                <span className="text-xs font-black uppercase tracking-widest text-red-600 drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
+                  {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
                 </span>
               </div>
             )}
@@ -340,7 +555,7 @@ export default function App() {
         );
       })}
 
-      {/* --- DEAD CENTER CONTROL HUB BUTTON --- */}
+      {/* 2. CENTER CONTROL HUB TRIGGER BUTTON */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40">
         <button
           onClick={() => setShowControlHub(true)}
@@ -350,7 +565,7 @@ export default function App() {
         </button>
       </div>
 
-      {/* --- MATCH CONTROL MODAL --- */}
+      {/* 3. GLOBAL MATCH CONTROL MODAL */}
       {showControlHub && (
         <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl relative">
@@ -366,7 +581,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* POD SIZE SELECTION */}
             <div>
               <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
                 <Users size={12} /> Pod Size
@@ -404,7 +618,7 @@ export default function App() {
         </div>
       )}
 
-      {/* --- SLOT CONFIGURATION DRAWERS --- */}
+      {/* 4. SLOT PROFILE MANIFEST DRAWERS */}
       {activeMenuSlot !== null && (
         <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-neutral-900 border border-neutral-800 w-full max-w-md rounded-2xl p-6 flex flex-col gap-5 max-h-[90vh] overflow-y-auto shadow-2xl">
@@ -478,7 +692,6 @@ export default function App() {
                       🏆 {getActiveSlotPlayer().wins || 0} Wins
                     </span>
                   </div>
-
                   <div className="flex justify-between items-center pt-1">
                     <button
                       onClick={() => handleRecordWin(getActiveSlotPlayer().id)}
@@ -486,7 +699,6 @@ export default function App() {
                     >
                       Record Match Win 🎉
                     </button>
-
                     <button
                       onClick={() =>
                         setSlots(
@@ -504,7 +716,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* FAVORITES SHELF */}
                 <div>
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
                     <Star
@@ -513,7 +724,7 @@ export default function App() {
                     />{" "}
                     Favorites List
                   </h3>
-                  <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin pointer-events-auto">
+                  <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
                     {playerFavorites.length === 0 ? (
                       <p className="text-xs text-neutral-600 italic py-1">
                         No favorited commanders yet.
@@ -543,7 +754,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* ADD CUSTOM PROXY ART FORM */}
                 <div className="border-t border-neutral-800/60 pt-3">
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
                     Upload Custom Proxy Art
@@ -558,7 +768,6 @@ export default function App() {
                       const currentSlot = slots.find(
                         (s) => s.id === activeMenuSlot,
                       );
-
                       const formData = new FormData();
                       formData.append("commander_name", name);
                       formData.append("image", file);
@@ -588,7 +797,7 @@ export default function App() {
                         console.error("Upload error:", err);
                       }
                     }}
-                    className="flex flex-col gap-2 pointer-events-auto"
+                    className="flex flex-col gap-2"
                   >
                     <input
                       name="customName"
@@ -615,15 +824,11 @@ export default function App() {
                   </form>
                 </div>
 
-                {/* SEARCH SCRYFALL FORM */}
                 <div className="border-t border-neutral-800/60 pt-3">
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
                     Search Scryfall Art
                   </h3>
-                  <form
-                    onSubmit={handleScryfallSearch}
-                    className="flex gap-2 pointer-events-auto"
-                  >
+                  <form onSubmit={handleScryfallSearch} className="flex gap-2">
                     <input
                       type="text"
                       value={searchQuery}
@@ -644,7 +849,7 @@ export default function App() {
                   </form>
                 </div>
                 {searchResults.length > 0 && (
-                  <div className="border border-neutral-800 bg-neutral-950 p-2 rounded-xl max-h-[150px] overflow-y-auto flex flex-col gap-1 pointer-events-auto">
+                  <div className="border border-neutral-800 bg-neutral-950 p-2 rounded-xl max-h-[150px] overflow-y-auto flex flex-col gap-1">
                     {searchResults.map((card) => {
                       const img =
                         card.image_uris?.art_crop ||
