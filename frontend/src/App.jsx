@@ -90,8 +90,8 @@ export default function App() {
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
-  const BACKEND_URL = "http://localhost:5000/api";
-  // const BACKEND_URL = "https://life.mckaykleinman.com/api";
+  // const BACKEND_URL = "http://localhost:5000/api";
+  const BACKEND_URL = "https://life.mckaykleinman.com/api";
 
   const visibleSlots = slots.slice(0, playerCount);
 
