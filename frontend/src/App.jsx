@@ -20,30 +20,38 @@ export default function App() {
       player: null,
       life: 40,
       bgImage: "",
+      commanderName: "",
+      poison: 0,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
     {
       id: 2,
-      label: "Slot 2",
+      label: "Slot 1",
       player: null,
       life: 40,
       bgImage: "",
+      commanderName: "",
+      poison: 0,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
     {
       id: 3,
-      label: "Slot 3",
+      label: "Slot 1",
       player: null,
       life: 40,
       bgImage: "",
+      commanderName: "",
+      poison: 0,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
     {
       id: 4,
-      label: "Slot 4",
+      label: "Slot 1",
       player: null,
       life: 40,
       bgImage: "",
+      commanderName: "",
+      poison: 0,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
   ]);
@@ -53,6 +61,12 @@ export default function App() {
   const [activeMenuSlot, setActiveMenuSlot] = useState(null);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [activeCmdModifier, setActiveCmdModifier] = useState(null);
+  const [renamingPlayerId, setRenamingPlayerId] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [lifeHistory, setLifeHistory] = useState({});
+  const [showHistory, setShowHistory] = useState(false);
+  const [gameHistory, setGameHistory] = useState([]);
+  const [turnCount, setTurnCount] = useState(1);
 
   // Scryfall & Favorites States
   const [searchQuery, setSearchQuery] = useState("");
@@ -70,8 +84,19 @@ export default function App() {
 
   const visibleSlots = slots.slice(0, playerCount);
 
+  const fetchGameHistory = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/games`);
+      const data = await res.json();
+      setGameHistory(data);
+    } catch (err) {
+      console.error("Error fetching game history:", err);
+    }
+  };
+
   useEffect(() => {
     fetchPlayers();
+    fetchGameHistory();
   }, []);
 
   useEffect(() => {
@@ -107,6 +132,32 @@ export default function App() {
     }
   };
 
+  const handleLogGame = async (playerId, playerName) => {
+    try {
+      await fetch(`${BACKEND_URL}/games`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          winner_id: playerId,
+          winner_name: playerName,
+          player_count: playerCount,
+          turns: turnCount,
+        }),
+      });
+    } catch (err) {
+      console.error("Error logging game:", err);
+    }
+  };
+
+  const handleDeleteGameEntry = async (gameId) => {
+    try {
+      await fetch(`${BACKEND_URL}/games/${gameId}`, { method: "DELETE" });
+      setGameHistory((prev) => prev.filter((g) => g.id !== gameId));
+    } catch (err) {
+      console.error("Error deleting game entry:", err);
+    }
+  };
+
   const handleCreatePlayer = async (e) => {
     e.preventDefault();
     if (!newPlayerName.trim()) return;
@@ -122,6 +173,54 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error creating player:", err);
+    }
+  };
+
+  const handleDeletePlayer = async (playerId) => {
+    if (!confirm("Delete this profile permanently?")) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/players/${playerId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        fetchPlayers();
+        // If this player is assigned to a slot, unlink them
+        setSlots(
+          slots.map((s) =>
+            s.player?.id === playerId
+              ? { ...s, player: null, bgImage: "", commanderName: "" }
+              : s,
+          ),
+        );
+      }
+    } catch (err) {
+      console.error("Error deleting player:", err);
+    }
+  };
+
+  const handleRenamePlayer = async (playerId) => {
+    if (!renameValue.trim()) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/players/${playerId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: renameValue.trim() }),
+      });
+      if (res.ok) {
+        fetchPlayers();
+        // Update the name live on any slot using this player
+        setSlots(
+          slots.map((s) =>
+            s.player?.id === playerId
+              ? { ...s, player: { ...s.player, name: renameValue.trim() } }
+              : s,
+          ),
+        );
+        setRenamingPlayerId(null);
+        setRenameValue("");
+      }
+    } catch (err) {
+      console.error("Error renaming player:", err);
     }
   };
 
@@ -168,7 +267,9 @@ export default function App() {
       });
       setSlots(
         slots.map((s) =>
-          s.id === activeMenuSlot ? { ...s, bgImage: image_url } : s,
+          s.id === activeMenuSlot
+            ? { ...s, bgImage: image_url, commanderName: card.name }
+            : s,
         ),
       );
       setActiveMenuSlot(null);
@@ -178,9 +279,16 @@ export default function App() {
   };
 
   const handleSelectExistingFavorite = (imageUrl) => {
+    const fav = playerFavorites.find((f) => f.image_url === imageUrl);
     setSlots(
       slots.map((s) =>
-        s.id === activeMenuSlot ? { ...s, bgImage: imageUrl } : s,
+        s.id === activeMenuSlot
+          ? {
+              ...s,
+              bgImage: imageUrl,
+              commanderName: fav?.commander_name || "Commander",
+            }
+          : s,
       ),
     );
     setActiveMenuSlot(null);
@@ -195,9 +303,32 @@ export default function App() {
   };
 
   const updateLife = (id, amount) => {
+    setLifeHistory((prev) => ({
+      ...prev,
+      [id]: [...(prev[id] || []), slots.find((s) => s.id === id).life],
+    }));
     setSlots(
       slots.map((s) => (s.id === id ? { ...s, life: s.life + amount } : s)),
     );
+  };
+
+  const updatePoison = (id, amount) => {
+    setSlots(
+      slots.map((s) =>
+        s.id === id ? { ...s, poison: Math.max(0, s.poison + amount) } : s,
+      ),
+    );
+  };
+
+  const handleUndoLife = (id) => {
+    const history = lifeHistory[id];
+    if (!history || history.length === 0) return;
+    const previous = history[history.length - 1];
+    setLifeHistory((prev) => ({
+      ...prev,
+      [id]: prev[id].slice(0, -1),
+    }));
+    setSlots(slots.map((s) => (s.id === id ? { ...s, life: previous } : s)));
   };
 
   const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
@@ -206,6 +337,7 @@ export default function App() {
         if (s.id === targetSlotId) {
           const currentDamage = s.commanderDamage[opponentSlotId] || 0;
           const newDamage = Math.max(0, currentDamage + amount);
+          const isNowLethal = newDamage >= 21;
           return {
             ...s,
             life: s.life - amount,
@@ -213,6 +345,7 @@ export default function App() {
               ...s.commanderDamage,
               [opponentSlotId]: newDamage,
             },
+            killedBySlotId: isNowLethal ? opponentSlotId : s.killedBySlotId,
           };
         }
         return s;
@@ -226,7 +359,9 @@ export default function App() {
       slots.map((s) => ({
         ...s,
         life: 40,
+        poison: 0,
         commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+        killedBySlotId: null,
       })),
     );
     setStartingPlayerId(null);
@@ -249,6 +384,8 @@ export default function App() {
         setIsRolling(false);
       }
     }, 150);
+    setLifeHistory({});
+    setTurnCount(1);
   };
 
   const handleRecordWin = async (playerId) => {
@@ -257,7 +394,10 @@ export default function App() {
         method: "POST",
       });
       if (res.ok) {
+        const winner = slots.find((s) => s.player?.id === playerId)?.player;
+        await handleLogGame(playerId, winner?.name || "Unknown");
         fetchPlayers();
+        fetchGameHistory();
         setSlots(
           slots.map((s) => {
             if (s.player && s.player.id === playerId) {
@@ -294,26 +434,28 @@ export default function App() {
     return `P${slot.id}`;
   };
 
-  const getCommanderName = (slot) => {
-    if (!slot.bgImage) return "";
-
-    // 1. Check if it's in the recently fetched playerFavorites array
-    const favorite = playerFavorites.find((f) => f.image_url === slot.bgImage);
-    if (favorite) return favorite.commander_name;
-
-    // 2. Fallback: Parse a readable name from common Scryfall image URL paths if it's a direct card link
-    if (slot.bgImage.includes("scryfall")) {
-      try {
-        // Scryfall art-crop URLs often contain metadata or IDs, but if you want a reliable fallback
-        // without extra state, we'll cleanly display "Commander Art" or a shorter string if unfound.
-        return "Commander";
-      } catch {
-        return "Commander";
-      }
+  const getWinStreak = (playerId) => {
+    if (!playerId || gameHistory.length === 0) return 0;
+    let streak = 0;
+    for (const game of gameHistory) {
+      if (game.winner_id === playerId) streak++;
+      else break;
     }
-
-    return "Custom Art";
+    return streak;
   };
+
+  const getNemesis = (slot) => {
+    const entries = Object.entries(slot.commanderDamage).filter(
+      ([id, dmg]) => parseInt(id) !== slot.id && dmg > 0,
+    );
+    if (entries.length === 0) return null;
+    const [nemesisId, dmg] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
+    const nemesisSlot = slots.find((s) => s.id === parseInt(nemesisId));
+    if (!nemesisSlot) return null;
+    return { name: getShortName(nemesisSlot), dmg };
+  };
+
+  const getCommanderName = (slot) => slot.commanderName || "";
 
   return (
     <div
@@ -326,10 +468,12 @@ export default function App() {
         const isStartingPlayer = startingPlayerId === slot.id;
         const is3PlayerSpannedRow = playerCount === 3 && index === 2;
 
+        const isLethalPoison = slot.poison >= 10;
         const lethalCommanderDamage = Object.values(slot.commanderDamage).some(
           (dmg) => dmg >= 21,
         );
-        const isDefeated = slot.life <= 0 || lethalCommanderDamage;
+        const isDefeated =
+          slot.life <= 0 || lethalCommanderDamage || isLethalPoison;
 
         return (
           <div
@@ -376,6 +520,11 @@ export default function App() {
                   }`}
                 >
                   <User size={14} /> {displayName}
+                  {slot.player && getWinStreak(slot.player.id) >= 2 && (
+                    <span className="text-sm filter drop-shadow-[0_0_6px_rgba(251,146,60,0.8)]">
+                      🔥
+                    </span>
+                  )}
                 </span>
 
                 {/* MIDDLE: Commander Name Badge */}
@@ -411,6 +560,51 @@ export default function App() {
 
               {/* LOWER INTERACTIVE FOOTER */}
               <div className="w-full flex flex-col items-center gap-2 pointer-events-auto z-30 px-2">
+                <div className="flex items-center gap-2 bg-black/40 border border-neutral-800/60 px-2 py-1 rounded-xl backdrop-blur-sm">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updatePoison(slot.id, -1);
+                    }}
+                    className="w-6 h-6 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-black text-xs rounded-lg active:scale-90 transition-transform"
+                  >
+                    −
+                  </button>
+                  <div className="flex items-center gap-1 min-w-[48px] justify-center">
+                    <span
+                      className={`text-sm ${slot.poison >= 10 ? "text-green-400 drop-shadow-[0_0_6px_rgba(74,222,128,0.6)]" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-500"}`}
+                    >
+                      🧪
+                    </span>
+                    <span
+                      className={`text-sm font-black tabular-nums ${slot.poison >= 10 ? "text-green-400" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-400"}`}
+                    >
+                      {slot.poison}/10
+                    </span>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updatePoison(slot.id, 1);
+                    }}
+                    className="w-6 h-6 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-black text-xs rounded-lg active:scale-90 transition-transform"
+                  >
+                    +
+                  </button>
+                </div>
+                {(() => {
+                  const nemesis = getNemesis(slot);
+                  return nemesis ? (
+                    <div className="flex items-center gap-1 bg-black/40 border border-red-900/40 px-2 py-0.5 rounded-full backdrop-blur-sm">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-red-400">
+                        ⚔️ {nemesis.name}
+                      </span>
+                      <span className="text-[10px] font-black text-red-300 tabular-nums">
+                        {nemesis.dmg}
+                      </span>
+                    </div>
+                  ) : null;
+                })()}
                 {activeCmdModifier &&
                 activeCmdModifier.targetSlotId === slot.id ? (
                   /* INDIVIDUAL COMMANDER DAMAGE CONTROL PANEL */
@@ -536,6 +730,17 @@ export default function App() {
                   >
                     +5
                   </button>
+                  {(lifeHistory[slot.id]?.length || 0) > 0 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleUndoLife(slot.id);
+                      }}
+                      className="flex items-center gap-1 px-3 py-1 bg-black/40 hover:bg-black/60 border border-neutral-700/40 text-neutral-500 hover:text-neutral-300 text-[11px] font-bold rounded-xl backdrop-blur-md transition-all active:scale-95 tracking-wide uppercase"
+                    >
+                      ↩ Undo
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -544,11 +749,27 @@ export default function App() {
             {isDefeated && (
               <div className="absolute inset-0 z-20 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center gap-1 pointer-events-none select-none">
                 <span className="text-5xl filter drop-shadow-[0_0_15px_rgba(0,0,0,1)] opacity-90">
-                  💀
+                  {isLethalPoison ? "🧪" : "💀"}
                 </span>
                 <span className="text-xs font-black uppercase tracking-widest text-red-600 drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
-                  {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
+                  {isLethalPoison
+                    ? "Poison Lethal"
+                    : lethalCommanderDamage
+                      ? "Commander Lethal"
+                      : "Defeated"}
                 </span>
+                {lethalCommanderDamage &&
+                  !isLethalPoison &&
+                  slot.killedBySlotId && (
+                    <span className="text-[11px] font-bold text-neutral-400 tracking-wide mt-0.5">
+                      by{" "}
+                      <span className="text-red-400">
+                        {getShortName(
+                          slots.find((s) => s.id === slot.killedBySlotId),
+                        )}
+                      </span>
+                    </span>
+                  )}
               </div>
             )}
           </div>
@@ -605,6 +826,40 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
+                <Dices size={12} /> Turn Counter
+              </label>
+              <div className="flex items-center gap-2 bg-neutral-950 p-2 rounded-xl border border-neutral-800">
+                <button
+                  onClick={() => setTurnCount((t) => Math.max(1, t - 1))}
+                  className="w-9 h-9 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-black rounded-lg border border-neutral-700 active:scale-90 transition-transform"
+                >
+                  −
+                </button>
+                <span className="flex-1 text-center text-lg font-black text-white tabular-nums">
+                  {turnCount}
+                </span>
+                <button
+                  onClick={() => setTurnCount((t) => t + 1)}
+                  className="w-9 h-9 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-black rounded-lg border border-neutral-700 active:scale-90 transition-transform"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                fetchGameHistory();
+                setShowHistory(true);
+              }}
+              className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+            >
+              <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
+              Game History
+            </button>
 
             <button
               onClick={handleNewGameAndRoll}
@@ -666,16 +921,73 @@ export default function App() {
                       </p>
                     ) : (
                       dbPlayers.map((p) => (
-                        <button
+                        <div
                           key={p.id}
-                          onClick={() => assignPlayerToSlot(activeMenuSlot, p)}
-                          className="w-full flex justify-between items-center px-4 py-2 rounded-lg text-sm bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-all group"
+                          className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-neutral-800"
                         >
-                          <span>{p.name}</span>
-                          <span className="text-xs bg-neutral-900 px-2 py-0.5 rounded-md border border-neutral-700/50 text-amber-400 font-medium group-hover:border-amber-500/30 transition-all">
-                            🏆 {p.wins || 0}
-                          </span>
-                        </button>
+                          {renamingPlayerId === p.id ? (
+                            <div className="flex flex-1 gap-1">
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter")
+                                    handleRenamePlayer(p.id);
+                                  if (e.key === "Escape") {
+                                    setRenamingPlayerId(null);
+                                    setRenameValue("");
+                                  }
+                                }}
+                                className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none focus:border-neutral-500"
+                              />
+                              <button
+                                onClick={() => handleRenamePlayer(p.id)}
+                                className="text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold px-2 py-0.5 rounded-lg transition-all"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setRenamingPlayerId(null);
+                                  setRenameValue("");
+                                }}
+                                className="text-xs text-neutral-400 hover:text-white px-1 transition-colors"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() =>
+                                  assignPlayerToSlot(activeMenuSlot, p)
+                                }
+                                className="flex-1 flex justify-between items-center text-sm text-neutral-200 hover:text-white transition-all group"
+                              >
+                                <span>{p.name}</span>
+                                <span className="text-xs bg-neutral-900 px-2 py-0.5 rounded-md border border-neutral-700/50 text-amber-400 font-medium">
+                                  🏆 {p.wins || 0}
+                                </span>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setRenamingPlayerId(p.id);
+                                  setRenameValue(p.name);
+                                }}
+                                className="p-1.5 text-neutral-500 hover:text-blue-400 transition-colors rounded-lg hover:bg-neutral-700"
+                              >
+                                <Settings size={13} />
+                              </button>
+                              <button
+                                onClick={() => handleDeletePlayer(p.id)}
+                                className="p-1.5 text-neutral-500 hover:text-red-400 transition-colors rounded-lg hover:bg-neutral-700"
+                              >
+                                <X size={13} />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       ))
                     )}
                   </div>
@@ -685,9 +997,56 @@ export default function App() {
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2 bg-neutral-950 p-3 border border-neutral-800 rounded-xl">
                   <div className="flex justify-between items-center border-b border-neutral-800/60 pb-2">
-                    <span className="text-sm font-bold text-blue-400">
-                      Profile: {getActiveSlotPlayer().name}
-                    </span>
+                    {renamingPlayerId === getActiveSlotPlayer().id ? (
+                      <div className="flex flex-1 gap-1 mr-2">
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              handleRenamePlayer(getActiveSlotPlayer().id);
+                            if (e.key === "Escape") {
+                              setRenamingPlayerId(null);
+                              setRenameValue("");
+                            }
+                          }}
+                          className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none focus:border-neutral-500"
+                        />
+                        <button
+                          onClick={() =>
+                            handleRenamePlayer(getActiveSlotPlayer().id)
+                          }
+                          className="text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold px-2 py-1 rounded-lg transition-all"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => {
+                            setRenamingPlayerId(null);
+                            setRenameValue("");
+                          }}
+                          className="text-xs text-neutral-400 hover:text-white px-1 transition-colors"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-blue-400">
+                          {getActiveSlotPlayer().name}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setRenamingPlayerId(getActiveSlotPlayer().id);
+                            setRenameValue(getActiveSlotPlayer().name);
+                          }}
+                          className="p-1 text-neutral-500 hover:text-blue-400 transition-colors rounded-lg hover:bg-neutral-800"
+                        >
+                          <Settings size={13} />
+                        </button>
+                      </div>
+                    )}
                     <span className="text-xs text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
                       🏆 {getActiveSlotPlayer().wins || 0} Wins
                     </span>
@@ -765,8 +1124,14 @@ export default function App() {
                       const file = e.target.elements.customFile.files[0];
                       if (!name || !file) return;
 
-                      const currentSlot = slots.find(
-                        (s) => s.id === activeMenuSlot,
+                      const currentSlot = slots.find((s) =>
+                        s.id === activeMenuSlot
+                          ? {
+                              ...s,
+                              bgImage: savedFavorite.image_url,
+                              commanderName: name,
+                            }
+                          : s,
                       );
                       const formData = new FormData();
                       formData.append("commander_name", name);
@@ -883,6 +1248,62 @@ export default function App() {
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {showHistory && (
+        <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200 flex items-center gap-2">
+                <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
+                Game History
+              </h2>
+              <button
+                onClick={() => setShowHistory(false)}
+                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2 overflow-y-auto">
+              {gameHistory.length === 0 ? (
+                <p className="text-sm text-neutral-500 text-center py-8 italic">
+                  No games recorded yet.
+                </p>
+              ) : (
+                gameHistory.map((game) => (
+                  <div
+                    key={game.id}
+                    className="flex items-center justify-between bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3"
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-sm font-bold text-amber-400">
+                        🏆 {game.winner_name}
+                      </span>
+                      <span className="text-[11px] text-neutral-500">
+                        {game.player_count}P • T{game.turns} •{" "}
+                        {new Date(game.played_at + "Z").toLocaleDateString(
+                          "en-US",
+                          {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          },
+                        )}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteGameEntry(game.id)}
+                      className="p-1.5 text-neutral-600 hover:text-red-400 hover:bg-neutral-800 rounded-lg transition-all"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

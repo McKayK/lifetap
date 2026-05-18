@@ -57,6 +57,12 @@ db.serialize(() => {
     }
   });
 
+  db.run(`ALTER TABLE games ADD COLUMN turns INTEGER DEFAULT 0`, (err) => {
+    if (err && !err.message.includes("duplicate column name")) {
+      console.error("Error updating games schema:", err.message);
+    }
+  });
+
   // 2. Create favorites table
   db.run(`CREATE TABLE IF NOT EXISTS favorites (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -163,6 +169,84 @@ app.post("/api/players/reset-wins", (req, res) => {
       success: true,
       message: "All player win histories have been reset.",
     });
+  });
+});
+
+// Rename a player
+app.patch("/api/players/:id", (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim())
+    return res.status(400).json({ error: "Name is required" });
+  db.run(
+    "UPDATE players SET name = ? WHERE id = ?",
+    [name.trim(), req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      if (this.changes === 0)
+        return res.status(404).json({ error: "Player not found" });
+      res.json({ id: req.params.id, name: name.trim() });
+    },
+  );
+});
+
+// Delete a player and their favorites
+app.delete("/api/players/:id", (req, res) => {
+  const playerId = req.params.id;
+  db.run("DELETE FROM favorites WHERE player_id = ?", [playerId], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    db.run("DELETE FROM players WHERE id = ?", [playerId], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      if (this.changes === 0)
+        return res.status(404).json({ error: "Player not found" });
+      res.json({ success: true });
+    });
+  });
+});
+
+// Create games table
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS games (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    winner_id INTEGER,
+    winner_name TEXT,
+    player_count INTEGER,
+    played_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(winner_id) REFERENCES players(id)
+  )`);
+});
+
+// Log a game result
+app.post("/api/games", (req, res) => {
+  const { winner_id, winner_name, player_count, turns } = req.body;
+  db.run(
+    "INSERT INTO games (winner_id, winner_name, player_count, turns) VALUES (?, ?, ?, ?)",
+    [winner_id, winner_name, player_count, turns || 0],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id: this.lastID });
+    },
+  );
+});
+
+// Fetch game history
+app.get("/api/games", (req, res) => {
+  db.all(
+    "SELECT * FROM games ORDER BY played_at DESC LIMIT 50",
+    [],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    },
+  );
+});
+
+// Delete a single game log entry
+app.delete("/api/games/:id", (req, res) => {
+  db.run("DELETE FROM games WHERE id = ?", [req.params.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0)
+      return res.status(404).json({ error: "Game not found" });
+    res.json({ success: true });
   });
 });
 
