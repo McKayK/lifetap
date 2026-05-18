@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   User,
   Settings,
@@ -22,36 +22,40 @@ export default function App() {
       bgImage: "",
       commanderName: "",
       poison: 0,
+      killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
     {
       id: 2,
-      label: "Slot 1",
+      label: "Slot 2",
       player: null,
       life: 40,
       bgImage: "",
       commanderName: "",
       poison: 0,
+      killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
     {
       id: 3,
-      label: "Slot 1",
+      label: "Slot 3",
       player: null,
       life: 40,
       bgImage: "",
       commanderName: "",
       poison: 0,
+      killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
     {
       id: 4,
-      label: "Slot 1",
+      label: "Slot 4",
       player: null,
       life: 40,
       bgImage: "",
       commanderName: "",
       poison: 0,
+      killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
     },
   ]);
@@ -67,6 +71,13 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [gameHistory, setGameHistory] = useState([]);
   const [turnCount, setTurnCount] = useState(1);
+  const [editingCmdSlot, setEditingCmdSlot] = useState(null);
+
+  const longPressRefs = useRef({});
+  const pointerDownOnTapTarget = useRef({});
+
+  // Life delta display per slot: { slotId: { amount, timeoutId } }
+  const [lifeDeltas, setLifeDeltas] = useState({});
 
   // Scryfall & Favorites States
   const [searchQuery, setSearchQuery] = useState("");
@@ -79,8 +90,8 @@ export default function App() {
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
-  //   const BACKEND_URL = "http://localhost:5000/api";
-  const BACKEND_URL = "https://life.mckaykleinman.com/api";
+  const BACKEND_URL = "http://localhost:5000/api";
+  // const BACKEND_URL = "https://life.mckaykleinman.com/api";
 
   const visibleSlots = slots.slice(0, playerCount);
 
@@ -184,7 +195,6 @@ export default function App() {
       });
       if (res.ok) {
         fetchPlayers();
-        // If this player is assigned to a slot, unlink them
         setSlots(
           slots.map((s) =>
             s.player?.id === playerId
@@ -208,7 +218,6 @@ export default function App() {
       });
       if (res.ok) {
         fetchPlayers();
-        // Update the name live on any slot using this player
         setSlots(
           slots.map((s) =>
             s.player?.id === playerId
@@ -302,14 +311,34 @@ export default function App() {
     );
   };
 
+  // Shows a floating delta (+/-) on a slot for 1.5s, accumulating if tapped rapidly
+  const showLifeDelta = (id, amount) => {
+    setLifeDeltas((prev) => {
+      const existing = prev[id];
+      if (existing?.timeoutId) clearTimeout(existing.timeoutId);
+      const newTotal = (existing?.amount ?? 0) + amount;
+      const timeoutId = setTimeout(() => {
+        setLifeDeltas((p) => {
+          const next = { ...p };
+          delete next[id];
+          return next;
+        });
+      }, 5000);
+      return { ...prev, [id]: { amount: newTotal, timeoutId } };
+    });
+  };
+
   const updateLife = (id, amount) => {
-    setLifeHistory((prev) => ({
-      ...prev,
-      [id]: [...(prev[id] || []), slots.find((s) => s.id === id).life],
-    }));
-    setSlots(
-      slots.map((s) => (s.id === id ? { ...s, life: s.life + amount } : s)),
-    );
+    setSlots((prev) => {
+      const slot = prev.find((s) => s.id === id);
+      setLifeHistory((h) => ({
+        ...h,
+        [id]: [...(h[id] || []), slot.life],
+      }));
+      return prev.map((s) =>
+        s.id === id ? { ...s, life: s.life + amount } : s,
+      );
+    });
   };
 
   const updatePoison = (id, amount) => {
@@ -318,17 +347,6 @@ export default function App() {
         s.id === id ? { ...s, poison: Math.max(0, s.poison + amount) } : s,
       ),
     );
-  };
-
-  const handleUndoLife = (id) => {
-    const history = lifeHistory[id];
-    if (!history || history.length === 0) return;
-    const previous = history[history.length - 1];
-    setLifeHistory((prev) => ({
-      ...prev,
-      [id]: prev[id].slice(0, -1),
-    }));
-    setSlots(slots.map((s) => (s.id === id ? { ...s, life: previous } : s)));
   };
 
   const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
@@ -351,6 +369,8 @@ export default function App() {
         return s;
       }),
     );
+    // Also show delta on the target slot
+    showLifeDelta(targetSlotId, -amount);
   };
 
   const handleNewGameAndRoll = () => {
@@ -366,6 +386,9 @@ export default function App() {
     );
     setStartingPlayerId(null);
     setIsRolling(true);
+    setLifeHistory({});
+    setLifeDeltas({});
+    setTurnCount(1);
 
     let counter = 0;
     const maxTicks = 10;
@@ -384,8 +407,6 @@ export default function App() {
         setIsRolling(false);
       }
     }, 150);
-    setLifeHistory({});
-    setTurnCount(1);
   };
 
   const handleRecordWin = async (playerId) => {
@@ -425,8 +446,8 @@ export default function App() {
   };
 
   const getShortName = (slot) => {
+    if (!slot) return "?";
     if (slot.player) {
-      // If the name is 5 letters or less, show the whole thing. Otherwise, truncate cleanly.
       return slot.player.name.length <= 7
         ? slot.player.name
         : `${slot.player.name.substring(0, 6)}…`;
@@ -457,6 +478,16 @@ export default function App() {
 
   const getCommanderName = (slot) => slot.commanderName || "";
 
+  // Which grid position each slot is in (for commander damage label orientation fix)
+  // Slots 1 & 2 are rotated 180deg (top row), slots 3 & 4 are normal (bottom row)
+  // So for a rotated slot: its own position in the 2x2 grid is mirrored
+  const getCmdDamageGridOrder = (slot) => {
+    const index = slots.indexOf(slot);
+    const isRotated = playerCount === 2 ? index === 0 : index < 2;
+    if (!isRotated) return [1, 2, 3, 4];
+    return [4, 3, 2, 1];
+  };
+
   return (
     <div
       className={`h-screen w-screen grid bg-neutral-950 p-1 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
@@ -475,6 +506,9 @@ export default function App() {
         const isDefeated =
           slot.life <= 0 || lethalCommanderDamage || isLethalPoison;
 
+        const delta = lifeDeltas[slot.id];
+        const cmdOrder = getCmdDamageGridOrder(slot);
+
         return (
           <div
             key={slot.id}
@@ -484,274 +518,284 @@ export default function App() {
                 : "border-neutral-800"
             } ${isRotated ? "rotate-180" : ""} ${is3PlayerSpannedRow ? "col-span-2" : ""}`}
           >
+            {/* Background Art */}
             {slot.bgImage && (
               <div
-                className={`absolute inset-0 bg-cover transition-all duration-700 ${
+                className={`absolute inset-0 bg-cover ${
                   playerCount === 2 ? "bg-center" : "bg-top"
                 }`}
                 style={{
                   backgroundImage: `url(${slot.bgImage})`,
-                  filter: "brightness(0.35) contrast(1.15)",
+                  filter: "brightness(0.55) contrast(1.15)",
                 }}
               />
             )}
 
-            {/* Tap Targets */}
+            {/* Tap Targets — z-0, split left/right */}
+            {/* Tap Targets — z-0, split left/right */}
             <div className="absolute inset-0 flex">
               <div
-                onClick={() => updateLife(slot.id, -1)}
-                className="w-1/2 h-full active:bg-red-500/10 transition-colors cursor-pointer"
-              />
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  pointerDownOnTapTarget.current[`${slot.id}-left`] = true;
+                  const timer = setTimeout(() => {
+                    updateLife(slot.id, -5);
+                    showLifeDelta(slot.id, -5);
+                    longPressRefs.current[`${slot.id}-left-interval`] =
+                      setInterval(() => {
+                        updateLife(slot.id, -5);
+                        showLifeDelta(slot.id, -5);
+                      }, 800);
+                  }, 500);
+                  longPressRefs.current[`${slot.id}-left-timer`] = timer;
+                }}
+                onPointerUp={(e) => {
+                  if (!pointerDownOnTapTarget.current[`${slot.id}-left`])
+                    return;
+                  pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
+                  clearTimeout(longPressRefs.current[`${slot.id}-left-timer`]);
+                  const interval =
+                    longPressRefs.current[`${slot.id}-left-interval`];
+                  if (interval) {
+                    clearInterval(interval);
+                    longPressRefs.current[`${slot.id}-left-interval`] = null;
+                  } else {
+                    updateLife(slot.id, -1);
+                    showLifeDelta(slot.id, -1);
+                  }
+                }}
+                onPointerLeave={(e) => {
+                  pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
+                  clearTimeout(longPressRefs.current[`${slot.id}-left-timer`]);
+                  clearInterval(
+                    longPressRefs.current[`${slot.id}-left-interval`],
+                  );
+                  longPressRefs.current[`${slot.id}-left-interval`] = null;
+                }}
+                className="w-1/2 h-full active:bg-red-500/20 flex items-center justify-center"
+              >
+                <span className="text-2xl font-black text-neutral-400">−</span>
+              </div>
               <div
-                onClick={() => updateLife(slot.id, 1)}
-                className="w-1/2 h-full active:bg-green-500/10 transition-colors cursor-pointer"
-              />
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  pointerDownOnTapTarget.current[`${slot.id}-right`] = true;
+                  const timer = setTimeout(() => {
+                    updateLife(slot.id, 5);
+                    showLifeDelta(slot.id, 5);
+                    longPressRefs.current[`${slot.id}-right-interval`] =
+                      setInterval(() => {
+                        updateLife(slot.id, 5);
+                        showLifeDelta(slot.id, 5);
+                      }, 800);
+                  }, 500);
+                  longPressRefs.current[`${slot.id}-right-timer`] = timer;
+                }}
+                onPointerUp={(e) => {
+                  if (!pointerDownOnTapTarget.current[`${slot.id}-right`])
+                    return;
+                  pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
+                  clearTimeout(longPressRefs.current[`${slot.id}-right-timer`]);
+                  const interval =
+                    longPressRefs.current[`${slot.id}-right-interval`];
+                  if (interval) {
+                    clearInterval(interval);
+                    longPressRefs.current[`${slot.id}-right-interval`] = null;
+                  } else {
+                    updateLife(slot.id, 1);
+                    showLifeDelta(slot.id, 1);
+                  }
+                }}
+                onPointerLeave={(e) => {
+                  pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
+                  clearTimeout(longPressRefs.current[`${slot.id}-right-timer`]);
+                  clearInterval(
+                    longPressRefs.current[`${slot.id}-right-interval`],
+                  );
+                  longPressRefs.current[`${slot.id}-right-interval`] = null;
+                }}
+                className="w-1/2 h-full active:bg-green-500/20 flex items-center justify-center"
+              >
+                <span className="text-2xl font-black text-neutral-400">+</span>
+              </div>
             </div>
 
-            {/* UI Content Layer */}
-            <div className="relative z-10 pointer-events-none flex flex-col items-center justify-between h-full w-full p-4">
-              <div className="flex justify-between w-full items-center pointer-events-auto relative">
-                {/* LEFT: Player Name */}
-                <span
-                  className={`font-bold text-sm md:text-base tracking-wide flex items-center gap-1 bg-black/50 px-3 py-1 rounded-full backdrop-blur-md border ${
-                    isStartingPlayer
-                      ? "border-yellow-500/50 text-yellow-400"
-                      : "border-neutral-700/30 text-neutral-200"
-                  }`}
-                >
-                  <User size={14} /> {displayName}
-                  {slot.player && getWinStreak(slot.player.id) >= 2 && (
-                    <span className="text-sm filter drop-shadow-[0_0_6px_rgba(251,146,60,0.8)]">
-                      🔥
+            {/* UI Content Layer — pointer-events-none by default, children opt in */}
+            <div className="relative z-10 flex flex-col items-center justify-between h-full w-full p-3 pointer-events-none">
+              {/* TOP ROW: Name | Commander Badge | Settings */}
+              <div className="flex justify-between w-full items-start pointer-events-none gap-2">
+                {/* LEFT: Player Name + nemesis + poison stacked */}
+                <div className="flex flex-col gap-1 items-start pointer-events-none">
+                  <span
+                    className={`font-bold text-sm tracking-wide flex items-center gap-1 bg-black/50 px-3 py-1 rounded-full border ${
+                      isStartingPlayer
+                        ? "border-yellow-500/50 text-yellow-400"
+                        : "border-neutral-700/30 text-neutral-200"
+                    }`}
+                  >
+                    <User size={13} /> {displayName}
+                    {slot.player && getWinStreak(slot.player.id) >= 2 && (
+                      <span className="text-sm">🔥</span>
+                    )}
+                  </span>
+
+                  {/* Nemesis badge — under name */}
+                  {(() => {
+                    const nemesis = getNemesis(slot);
+                    return nemesis ? (
+                      <div className="flex items-center gap-1.5 bg-black/50 border border-red-900/40 px-3 py-1 rounded-full">
+                        <span className="text-sm font-black text-red-400">
+                          ⚔️
+                        </span>
+                        <span className="text-xs font-black uppercase tracking-wide text-red-400">
+                          {nemesis.name}
+                        </span>
+                        <span className="text-sm font-black text-red-300 tabular-nums">
+                          {nemesis.dmg}
+                        </span>
+                      </div>
+                    ) : null;
+                  })()}
+
+                  {/* Poison counter — under nemesis */}
+                  <div className="flex items-center gap-1.5 bg-black/50 border border-neutral-800/60 px-2 py-1 rounded-full pointer-events-auto">
+                    <button
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        updatePoison(slot.id, -1);
+                      }}
+                      className="w-5 h-5 flex items-center justify-center bg-neutral-800 text-neutral-400 font-black text-xs rounded-full active:scale-90"
+                    >
+                      −
+                    </button>
+                    <span
+                      className={`text-xs ${slot.poison >= 10 ? "text-green-400" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-500"}`}
+                    >
+                      🧪
                     </span>
-                  )}
-                </span>
+                    <span
+                      className={`text-xs font-black tabular-nums ${slot.poison >= 10 ? "text-green-400" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-400"}`}
+                    >
+                      {slot.poison}/10
+                    </span>
+                    <button
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        updatePoison(slot.id, 1);
+                      }}
+                      className="w-5 h-5 flex items-center justify-center bg-neutral-800 text-neutral-400 font-black text-xs rounded-full active:scale-90"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
 
                 {/* MIDDLE: Commander Name Badge */}
                 {slot.bgImage && (
-                  <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 bg-black/60 border border-neutral-800 backdrop-blur-md px-3 py-1 rounded-md max-w-[120px] sm:max-w-[180px] truncate shadow-md">
-                    <span className="text-[10px] md:text-xs font-black tracking-wide text-neutral-300 uppercase block truncate">
+                  <div className="absolute left-1/2 -translate-x-1/2 top-3 bg-black/60 border border-neutral-800 px-3 py-1 rounded-md max-w-[120px] sm:max-w-[160px] truncate shadow-md">
+                    <span className="text-[10px] font-black tracking-wide text-neutral-300 uppercase block truncate">
                       {getCommanderName(slot)}
                     </span>
                   </div>
                 )}
 
-                {/* RIGHT: Settings Button */}
+                {/* RIGHT: Settings Button — bigger */}
                 <button
-                  onClick={() => setActiveMenuSlot(slot.id)}
-                  className={`p-2 bg-black/50 hover:bg-black/70 border rounded-full backdrop-blur-md transition-all ${
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setActiveMenuSlot(slot.id);
+                  }}
+                  className={`p-3 bg-black/50 border rounded-full transition-all flex-shrink-0 ${
                     isStartingPlayer
-                      ? "border-yellow-500/30 text-yellow-500/70 hover:text-yellow-400"
-                      : "border-neutral-700/30 text-neutral-400 hover:text-white"
+                      ? "border-yellow-500/30 text-yellow-500/70"
+                      : "border-neutral-700/30 text-neutral-400"
                   }`}
                 >
-                  <Settings size={16} />
+                  <Settings size={20} />
                 </button>
               </div>
 
-              {/* MASSIVE LIFE TOTAL WINDOW (Leaves this perfectly intact below) */}
-
-              {/* MASSIVE LIFE TOTAL WINDOW */}
-              <div className="flex flex-col items-center justify-center my-auto">
+              {/* LIFE TOTAL + DELTA */}
+              <div className="flex flex-col items-center justify-center my-auto relative">
                 <span className="text-7xl sm:text-8xl md:text-9xl font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums">
                   {slot.life}
                 </span>
+                {/* Floating delta */}
+                {delta && (
+                  <span
+                    key={delta.amount}
+                    className={`absolute -top-8 text-2xl font-black tabular-nums pointer-events-none
+                      ${delta.amount > 0 ? "text-green-400" : "text-red-400"}
+                      animate-bounce`}
+                  >
+                    {delta.amount > 0 ? `+${delta.amount}` : delta.amount}
+                  </span>
+                )}
               </div>
 
-              {/* LOWER INTERACTIVE FOOTER */}
-              <div className="w-full flex flex-col items-center gap-2 pointer-events-auto z-30 px-2">
-                <div className="flex items-center gap-2 bg-black/40 border border-neutral-800/60 px-2 py-1 rounded-xl backdrop-blur-sm">
+              {/* LOWER FOOTER — pointer-events-none wrapper, children opt in */}
+              <div className="w-full flex flex-col items-center gap-2 pointer-events-none">
+                {/* Commander damage panel or matrix */}
+                <div className="pointer-events-auto">
+                  {/* MINI DISPLAY — one button showing damage totals, no interaction */}
                   <button
-                    onClick={(e) => {
+                    onPointerDown={(e) => {
                       e.stopPropagation();
-                      updatePoison(slot.id, -1);
+                      setActiveCmdModifier({
+                        targetSlotId: slot.id,
+                        opponentSlotId: null,
+                      });
                     }}
-                    className="w-6 h-6 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-black text-xs rounded-lg active:scale-90 transition-transform"
+                    className="grid grid-cols-2 gap-1 bg-black/40 p-1 rounded-xl border border-neutral-800/60"
                   >
-                    −
-                  </button>
-                  <div className="flex items-center gap-1 min-w-[48px] justify-center">
-                    <span
-                      className={`text-sm ${slot.poison >= 10 ? "text-green-400 drop-shadow-[0_0_6px_rgba(74,222,128,0.6)]" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-500"}`}
-                    >
-                      🧪
-                    </span>
-                    <span
-                      className={`text-sm font-black tabular-nums ${slot.poison >= 10 ? "text-green-400" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-400"}`}
-                    >
-                      {slot.poison}/10
-                    </span>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      updatePoison(slot.id, 1);
-                    }}
-                    className="w-6 h-6 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-400 font-black text-xs rounded-lg active:scale-90 transition-transform"
-                  >
-                    +
-                  </button>
-                </div>
-                {(() => {
-                  const nemesis = getNemesis(slot);
-                  return nemesis ? (
-                    <div className="flex items-center gap-1 bg-black/40 border border-red-900/40 px-2 py-0.5 rounded-full backdrop-blur-sm">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-red-400">
-                        ⚔️ {nemesis.name}
-                      </span>
-                      <span className="text-[10px] font-black text-red-300 tabular-nums">
-                        {nemesis.dmg}
-                      </span>
-                    </div>
-                  ) : null;
-                })()}
-                {activeCmdModifier &&
-                activeCmdModifier.targetSlotId === slot.id ? (
-                  /* INDIVIDUAL COMMANDER DAMAGE CONTROL PANEL */
-                  <div className="w-full max-w-xs bg-black/80 p-2 rounded-xl border border-neutral-700 backdrop-blur-md flex flex-col gap-2">
-                    <div className="flex items-center justify-between border-b border-neutral-800 pb-1 px-1">
-                      <span className="text-[11px] font-black uppercase tracking-wider text-red-400">
-                        From{" "}
-                        {getShortName(
-                          slots.find(
-                            (s) => s.id === activeCmdModifier.opponentSlotId,
-                          ),
-                        )}
-                        :
-                      </span>
-                      <span className="text-sm text-white bg-neutral-800 px-2 py-0.5 rounded-md font-black tabular-nums">
-                        {slot.commanderDamage[
-                          activeCmdModifier.opponentSlotId
-                        ] || 0}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1">
-                      <button
-                        onClick={() =>
-                          updateCommanderDamage(
-                            slot.id,
-                            activeCmdModifier.opponentSlotId,
-                            -1,
-                          )
-                        }
-                        className="h-9 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 font-black text-sm rounded-lg border border-neutral-700 active:scale-90 transition-transform"
-                      >
-                        -1
-                      </button>
-                      <button
-                        onClick={() =>
-                          updateCommanderDamage(
-                            slot.id,
-                            activeCmdModifier.opponentSlotId,
-                            1,
-                          )
-                        }
-                        className="h-9 flex items-center justify-center bg-red-600/30 hover:bg-red-600/50 text-red-200 font-black text-sm rounded-lg border border-red-500/30 active:scale-90 transition-transform"
-                      >
-                        +1
-                      </button>
-                      <button
-                        onClick={() => setActiveCmdModifier(null)}
-                        className="h-9 flex items-center justify-center bg-neutral-900 text-neutral-400 hover:text-white rounded-lg border border-neutral-800 transition-colors"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  /* LIFETAP STYLE 2x2 COMMANDER DAMAGE MATRIX */
-                  <div className="w-full max-w-[240px] grid grid-cols-2 gap-1 bg-black/40 p-1 rounded-xl border border-neutral-800/60 backdrop-blur-sm">
-                    {/* Map all 4 slots into the grid to maintain a solid 2x2 shape */}
-                    {slots.map((opp) => {
-                      // If the slot matches the current player, show a disabled spacer or placeholder
+                    {cmdOrder.map((oppId) => {
+                      const opp = slots.find((s) => s.id === oppId);
+                      if (!opp) return null;
                       if (opp.id === slot.id) {
                         return (
                           <div
                             key={`self-${opp.id}`}
-                            className="h-8 rounded-lg bg-neutral-950/20 border border-transparent"
-                          />
+                            className="h-10 w-20 rounded-lg bg-neutral-950/20 border border-neutral-800/40 flex items-center justify-center"
+                          >
+                            <span className="text-[10px] font-black text-neutral-600 uppercase tracking-widest">
+                              ME
+                            </span>
+                          </div>
                         );
                       }
-
-                      // Check if this opponent is actually in the current match size
                       const isOpponentInGame = opp.id <= playerCount;
                       const amt = slot.commanderDamage[opp.id] || 0;
-
                       return (
-                        <button
+                        <div
                           key={opp.id}
-                          disabled={!isOpponentInGame}
-                          onClick={() =>
-                            setActiveCmdModifier({
-                              targetSlotId: slot.id,
-                              opponentSlotId: opp.id,
-                            })
-                          }
-                          className={`h-10 px-2 text-xs font-black rounded-lg transition-all flex items-center justify-between border tabular-nums ${
+                          className={`h-10 w-20 rounded-lg flex items-center justify-center border tabular-nums ${
                             !isOpponentInGame
-                              ? "bg-neutral-950/40 text-neutral-700 border-neutral-900/30 opacity-20 cursor-not-allowed"
+                              ? "bg-neutral-950/40 border-neutral-900/30 opacity-20"
                               : amt > 0
-                                ? "bg-red-950/60 text-red-200 border-red-700/50 shadow-[inset_0_0_10px_rgba(220,38,38,0.15)]"
-                                : "bg-neutral-900/70 text-neutral-400 border-neutral-800 hover:text-neutral-200"
+                                ? "bg-red-950/60 border-red-700/50"
+                                : "bg-neutral-900/70 border-neutral-800"
                           }`}
                         >
-                          <span className="tracking-wide truncate max-w-[40px] uppercase text-[10px] opacity-80">
-                            {getShortName(opp)}
+                          <span
+                            className={`text-xl font-black ${amt > 0 ? "text-red-400" : "text-neutral-600"}`}
+                          >
+                            {isOpponentInGame ? amt : ""}
                           </span>
-
-                          {isOpponentInGame && (
-                            <span
-                              className={`text-base font-black tracking-tight ${
-                                amt > 0
-                                  ? "text-red-400 drop-shadow-[0_0_6px_rgba(239,68,68,0.2)]"
-                                  : "text-neutral-500"
-                              }`}
-                            >
-                              {amt}
-                            </span>
-                          )}
-                        </button>
+                        </div>
                       );
                     })}
-                  </div>
-                )}
-
-                {/* BASE MODIFIER BUTTONS */}
-                <div className="flex gap-6 mb-1">
-                  <button
-                    onClick={() => updateLife(slot.id, -5)}
-                    className="px-5 py-1.5 bg-black/50 hover:bg-black/70 border border-neutral-700/30 active:scale-95 text-red-400 font-black text-sm rounded-xl backdrop-blur-md transition-all tracking-wider"
-                  >
-                    -5
                   </button>
-                  <button
-                    onClick={() => updateLife(slot.id, 5)}
-                    className="px-5 py-1.5 bg-black/50 hover:bg-black/70 border border-neutral-700/30 active:scale-95 text-green-400 font-black text-sm rounded-xl backdrop-blur-md transition-all tracking-wider"
-                  >
-                    +5
-                  </button>
-                  {(lifeHistory[slot.id]?.length || 0) > 0 && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleUndoLife(slot.id);
-                      }}
-                      className="flex items-center gap-1 px-3 py-1 bg-black/40 hover:bg-black/60 border border-neutral-700/40 text-neutral-500 hover:text-neutral-300 text-[11px] font-bold rounded-xl backdrop-blur-md transition-all active:scale-95 tracking-wide uppercase"
-                    >
-                      ↩ Undo
-                    </button>
-                  )}
                 </div>
               </div>
             </div>
 
             {/* DEFEATED OVERLAY */}
             {isDefeated && (
-              <div className="absolute inset-0 z-20 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center gap-1 pointer-events-none select-none">
-                <span className="text-5xl filter drop-shadow-[0_0_15px_rgba(0,0,0,1)] opacity-90">
+              <div className="absolute inset-0 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 pointer-events-none select-none">
+                <span className="text-5xl opacity-90">
                   {isLethalPoison ? "🧪" : "💀"}
                 </span>
-                <span className="text-xs font-black uppercase tracking-widest text-red-600 drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
+                <span className="text-xs font-black uppercase tracking-widest text-red-500">
                   {isLethalPoison
                     ? "Poison Lethal"
                     : lethalCommanderDamage
@@ -779,8 +823,8 @@ export default function App() {
       {/* 2. CENTER CONTROL HUB TRIGGER BUTTON */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40">
         <button
-          onClick={() => setShowControlHub(true)}
-          className="p-3 bg-neutral-900 border-2 border-neutral-700 hover:border-neutral-500 text-neutral-400 hover:text-white rounded-full shadow-[0_0_20px_rgba(0,0,0,0.75)] active:scale-90 transition-all backdrop-blur-lg"
+          onPointerDown={() => setShowControlHub(true)}
+          className="p-3 bg-neutral-900 border-2 border-neutral-700 hover:border-neutral-500 text-neutral-400 hover:text-white rounded-full shadow-[0_0_20px_rgba(0,0,0,0.75)] active:scale-90"
         >
           <Layers size={20} />
         </button>
@@ -788,8 +832,14 @@ export default function App() {
 
       {/* 3. GLOBAL MATCH CONTROL MODAL */}
       {showControlHub && (
-        <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl relative">
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onPointerDown={() => setShowControlHub(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
               <h2 className="text-lg font-bold text-neutral-200">
                 Match Controls
@@ -810,43 +860,19 @@ export default function App() {
                 {[2, 3, 4].map((num) => (
                   <button
                     key={num}
-                    type="button"
                     onClick={() => {
                       setPlayerCount(num);
                       setStartingPlayerId(null);
                     }}
                     className={`py-1.5 rounded-lg font-bold text-xs transition-all ${
                       playerCount === num
-                        ? "bg-blue-600 text-white shadow-sm"
+                        ? "bg-blue-600 text-white"
                         : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
                     }`}
                   >
                     {num} P
                   </button>
                 ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
-                <Dices size={12} /> Turn Counter
-              </label>
-              <div className="flex items-center gap-2 bg-neutral-950 p-2 rounded-xl border border-neutral-800">
-                <button
-                  onClick={() => setTurnCount((t) => Math.max(1, t - 1))}
-                  className="w-9 h-9 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-black rounded-lg border border-neutral-700 active:scale-90 transition-transform"
-                >
-                  −
-                </button>
-                <span className="flex-1 text-center text-lg font-black text-white tabular-nums">
-                  {turnCount}
-                </span>
-                <button
-                  onClick={() => setTurnCount((t) => t + 1)}
-                  className="w-9 h-9 flex items-center justify-center bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-black rounded-lg border border-neutral-700 active:scale-90 transition-transform"
-                >
-                  +
-                </button>
               </div>
             </div>
 
@@ -873,10 +899,16 @@ export default function App() {
         </div>
       )}
 
-      {/* 4. SLOT PROFILE MANIFEST DRAWERS */}
+      {/* 4. SLOT PROFILE DRAWER */}
       {activeMenuSlot !== null && (
-        <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-neutral-900 border border-neutral-800 w-full max-w-md rounded-2xl p-6 flex flex-col gap-5 max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onPointerDown={() => setActiveMenuSlot(null)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-md rounded-2xl p-6 flex flex-col gap-5 max-h-[90vh] overflow-y-auto shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
               <h2 className="text-xl font-bold text-neutral-100">
                 Slot Configuration
@@ -888,6 +920,7 @@ export default function App() {
                 <X size={18} />
               </button>
             </div>
+
             {!getActiveSlotPlayer() ? (
               <>
                 <div>
@@ -939,11 +972,11 @@ export default function App() {
                                     setRenameValue("");
                                   }
                                 }}
-                                className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none focus:border-neutral-500"
+                                className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none"
                               />
                               <button
                                 onClick={() => handleRenamePlayer(p.id)}
-                                className="text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold px-2 py-0.5 rounded-lg transition-all"
+                                className="text-xs bg-blue-600 text-white font-bold px-2 py-0.5 rounded-lg"
                               >
                                 Save
                               </button>
@@ -952,7 +985,7 @@ export default function App() {
                                   setRenamingPlayerId(null);
                                   setRenameValue("");
                                 }}
-                                className="text-xs text-neutral-400 hover:text-white px-1 transition-colors"
+                                className="text-neutral-400 hover:text-white px-1"
                               >
                                 <X size={14} />
                               </button>
@@ -963,7 +996,7 @@ export default function App() {
                                 onClick={() =>
                                   assignPlayerToSlot(activeMenuSlot, p)
                                 }
-                                className="flex-1 flex justify-between items-center text-sm text-neutral-200 hover:text-white transition-all group"
+                                className="flex-1 flex justify-between items-center text-sm text-neutral-200 hover:text-white"
                               >
                                 <span>{p.name}</span>
                                 <span className="text-xs bg-neutral-900 px-2 py-0.5 rounded-md border border-neutral-700/50 text-amber-400 font-medium">
@@ -975,13 +1008,13 @@ export default function App() {
                                   setRenamingPlayerId(p.id);
                                   setRenameValue(p.name);
                                 }}
-                                className="p-1.5 text-neutral-500 hover:text-blue-400 transition-colors rounded-lg hover:bg-neutral-700"
+                                className="p-1.5 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-700"
                               >
                                 <Settings size={13} />
                               </button>
                               <button
                                 onClick={() => handleDeletePlayer(p.id)}
-                                className="p-1.5 text-neutral-500 hover:text-red-400 transition-colors rounded-lg hover:bg-neutral-700"
+                                className="p-1.5 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-neutral-700"
                               >
                                 <X size={13} />
                               </button>
@@ -1011,13 +1044,13 @@ export default function App() {
                               setRenameValue("");
                             }
                           }}
-                          className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none focus:border-neutral-500"
+                          className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none"
                         />
                         <button
                           onClick={() =>
                             handleRenamePlayer(getActiveSlotPlayer().id)
                           }
-                          className="text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold px-2 py-1 rounded-lg transition-all"
+                          className="text-xs bg-blue-600 text-white font-bold px-2 py-1 rounded-lg"
                         >
                           Save
                         </button>
@@ -1026,7 +1059,7 @@ export default function App() {
                             setRenamingPlayerId(null);
                             setRenameValue("");
                           }}
-                          className="text-xs text-neutral-400 hover:text-white px-1 transition-colors"
+                          className="text-neutral-400 px-1"
                         >
                           <X size={14} />
                         </button>
@@ -1041,7 +1074,7 @@ export default function App() {
                             setRenamingPlayerId(getActiveSlotPlayer().id);
                             setRenameValue(getActiveSlotPlayer().name);
                           }}
-                          className="p-1 text-neutral-500 hover:text-blue-400 transition-colors rounded-lg hover:bg-neutral-800"
+                          className="p-1 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-800"
                         >
                           <Settings size={13} />
                         </button>
@@ -1083,7 +1116,7 @@ export default function App() {
                     />{" "}
                     Favorites List
                   </h3>
-                  <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                  <div className="flex gap-2 overflow-x-auto pb-2">
                     {playerFavorites.length === 0 ? (
                       <p className="text-xs text-neutral-600 italic py-1">
                         No favorited commanders yet.
@@ -1123,27 +1156,16 @@ export default function App() {
                       const name = e.target.elements.customName.value.trim();
                       const file = e.target.elements.customFile.files[0];
                       if (!name || !file) return;
-
-                      const currentSlot = slots.find((s) =>
-                        s.id === activeMenuSlot
-                          ? {
-                              ...s,
-                              bgImage: savedFavorite.image_url,
-                              commanderName: name,
-                            }
-                          : s,
+                      const currentSlot = slots.find(
+                        (s) => s.id === activeMenuSlot,
                       );
                       const formData = new FormData();
                       formData.append("commander_name", name);
                       formData.append("image", file);
-
                       try {
                         const res = await fetch(
                           `${BACKEND_URL}/players/${currentSlot.player.id}/upload-favorite`,
-                          {
-                            method: "POST",
-                            body: formData,
-                          },
+                          { method: "POST", body: formData },
                         );
                         if (res.ok) {
                           const savedFavorite = await res.json();
@@ -1152,7 +1174,11 @@ export default function App() {
                           setSlots(
                             slots.map((s) =>
                               s.id === activeMenuSlot
-                                ? { ...s, bgImage: savedFavorite.image_url }
+                                ? {
+                                    ...s,
+                                    bgImage: savedFavorite.image_url,
+                                    commanderName: name,
+                                  }
                                 : s,
                             ),
                           );
@@ -1176,12 +1202,12 @@ export default function App() {
                         name="customFile"
                         type="file"
                         accept="image/*"
-                        className="flex-1 text-xs text-neutral-400 file:mr-2 file:py-1 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-neutral-800 file:text-neutral-200 file:hover:bg-neutral-700 cursor-pointer"
+                        className="flex-1 text-xs text-neutral-400 file:mr-2 file:py-1 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-neutral-800 file:text-neutral-200 cursor-pointer"
                         required
                       />
                       <button
                         type="submit"
-                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition-all shadow-md"
+                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md"
                       >
                         Upload
                       </button>
@@ -1213,6 +1239,7 @@ export default function App() {
                     </button>
                   </form>
                 </div>
+
                 {searchResults.length > 0 && (
                   <div className="border border-neutral-800 bg-neutral-950 p-2 rounded-xl max-h-[150px] overflow-y-auto flex flex-col gap-1">
                     {searchResults.map((card) => {
@@ -1224,7 +1251,7 @@ export default function App() {
                         <button
                           key={card.id}
                           onClick={() => handleSelectCommander(card)}
-                          className="w-full flex items-center gap-3 p-1.5 hover:bg-neutral-800/60 rounded-lg text-left transition-all group"
+                          className="w-full flex items-center gap-3 p-1.5 hover:bg-neutral-800/60 rounded-lg text-left group"
                         >
                           {img && (
                             <img
@@ -1234,7 +1261,7 @@ export default function App() {
                             />
                           )}
                           <div className="flex flex-col">
-                            <span className="text-sm font-medium text-neutral-200 group-hover:text-white transition-colors">
+                            <span className="text-sm font-medium text-neutral-200 group-hover:text-white">
                               {card.name}
                             </span>
                             <span className="text-[10px] text-neutral-500">
@@ -1251,9 +1278,17 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* 5. GAME HISTORY MODAL */}
       {showHistory && (
-        <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl">
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onPointerDown={() => setShowHistory(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
               <h2 className="text-lg font-bold text-neutral-200 flex items-center gap-2">
                 <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
@@ -1266,7 +1301,6 @@ export default function App() {
                 <X size={16} />
               </button>
             </div>
-
             <div className="flex flex-col gap-2 overflow-y-auto">
               {gameHistory.length === 0 ? (
                 <p className="text-sm text-neutral-500 text-center py-8 italic">
@@ -1307,6 +1341,136 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* COMMANDER DAMAGE POPUP */}
+      {activeCmdModifier &&
+        (() => {
+          const targetSlot = slots.find(
+            (s) => s.id === activeCmdModifier.targetSlotId,
+          );
+          if (!targetSlot) return null;
+          const cmdOrder = targetSlot.id <= 2 ? [4, 3, 2, 1] : [1, 2, 3, 4];
+          return (
+            <div
+              className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                setActiveCmdModifier(null);
+              }}
+            >
+              <div
+                className={`grid grid-cols-2 gap-3 p-4 w-[90vw] max-w-sm ${
+                  targetSlot.id <= 2 ? "rotate-180" : ""
+                }`}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {cmdOrder.map((oppId) => {
+                  const opp = slots.find((s) => s.id === oppId);
+                  if (!opp) return null;
+
+                  if (opp.id === targetSlot.id) {
+                    return (
+                      <div
+                        key={`self-${opp.id}`}
+                        className="h-32 rounded-2xl bg-neutral-950/60 border-2 border-neutral-800 flex items-center justify-center"
+                      >
+                        <span className="text-lg font-black text-neutral-600 uppercase tracking-widest">
+                          ME
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  const isOpponentInGame = opp.id <= playerCount;
+                  const amt = targetSlot.commanderDamage[opp.id] || 0;
+
+                  if (!isOpponentInGame) {
+                    return (
+                      <div
+                        key={opp.id}
+                        className="h-32 rounded-2xl bg-neutral-950/40 border-2 border-neutral-900/30 opacity-20"
+                      />
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={opp.id}
+                      className={`h-32 rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${
+                        amt > 0
+                          ? "bg-red-950/40 border-red-700/50"
+                          : "bg-neutral-900 border-neutral-700"
+                      }`}
+                    >
+                      <span
+                        className={`text-4xl font-black tabular-nums pointer-events-none z-10 ${amt > 0 ? "text-red-400" : "text-neutral-500"}`}
+                      >
+                        {amt}
+                      </span>
+                      {/* Track long press per opponent */}
+                      <div className="absolute inset-0 flex">
+                        {editingCmdSlot === opp.id ? (
+                          <>
+                            <div
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                updateCommanderDamage(
+                                  targetSlot.id,
+                                  opp.id,
+                                  -1,
+                                );
+                              }}
+                              className="w-1/2 h-full active:bg-red-500/20 flex items-center justify-center"
+                            >
+                              <span className="text-2xl font-black text-neutral-400">
+                                −
+                              </span>
+                            </div>
+                            <div
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                updateCommanderDamage(targetSlot.id, opp.id, 1);
+                              }}
+                              className="w-1/2 h-full active:bg-green-500/20 flex items-center justify-center"
+                            >
+                              <span className="text-2xl font-black text-neutral-400">
+                                +
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <div
+                            className="absolute inset-0 active:bg-white/10"
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                              const timer = setTimeout(
+                                () => setEditingCmdSlot(opp.id),
+                                500,
+                              );
+                              e.currentTarget.dataset.timer = timer;
+                            }}
+                            onPointerUp={(e) => {
+                              e.stopPropagation();
+                              clearTimeout(
+                                parseInt(e.currentTarget.dataset.timer),
+                              );
+                              if (editingCmdSlot !== opp.id)
+                                updateCommanderDamage(targetSlot.id, opp.id, 1);
+                            }}
+                            onPointerLeave={(e) => {
+                              clearTimeout(
+                                parseInt(e.currentTarget.dataset.timer),
+                              );
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 }

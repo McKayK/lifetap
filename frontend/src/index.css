@@ -12,3 +12,6 @@ body {
     sans-serif;
   overflow: hidden; /* Keeps our app feeling like a native full-screen mobile app */
 }
+* {
+  touch-action: manipulation;
+}
