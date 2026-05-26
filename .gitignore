@@ -8,3 +8,5 @@ frontend/dist/
 
 # Ignore the local SQLite database file
 backend/data/
+
+.claude

@@ -23,7 +23,7 @@ export default function App() {
       commanderName: "",
       poison: 0,
       killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
     {
       id: 2,
@@ -34,7 +34,7 @@ export default function App() {
       commanderName: "",
       poison: 0,
       killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
     {
       id: 3,
@@ -45,7 +45,7 @@ export default function App() {
       commanderName: "",
       poison: 0,
       killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
     {
       id: 4,
@@ -56,7 +56,18 @@ export default function App() {
       commanderName: "",
       poison: 0,
       killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+    },
+    {
+      id: 5,
+      label: "Slot 5",
+      player: null,
+      life: 40,
+      bgImage: "",
+      commanderName: "",
+      poison: 0,
+      killedBySlotId: null,
+      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
   ]);
 
@@ -380,7 +391,7 @@ export default function App() {
         ...s,
         life: 40,
         poison: 0,
-        commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0 },
+        commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
         killedBySlotId: null,
       })),
     );
@@ -442,6 +453,7 @@ export default function App() {
 
   const getGridClasses = () => {
     if (playerCount === 2) return "grid-cols-1 grid-rows-2";
+    if (playerCount === 5) return "grid-cols-2 grid-rows-3";
     return "grid-cols-2 grid-rows-2";
   };
 
@@ -479,13 +491,13 @@ export default function App() {
   const getCommanderName = (slot) => slot.commanderName || "";
 
   // Which grid position each slot is in (for commander damage label orientation fix)
-  // Slots 1 & 2 are rotated 180deg (top row), slots 3 & 4 are normal (bottom row)
-  // So for a rotated slot: its own position in the 2x2 grid is mirrored
+  // Slots 1 & 2 are rotated 180deg (top row), slots 3+ are normal (bottom rows)
+  // So for a rotated slot: its own position in the grid is mirrored
   const getCmdDamageGridOrder = (slot) => {
-    const index = slots.indexOf(slot);
+    const allIds = Array.from({ length: playerCount }, (_, i) => i + 1);
+    const index = visibleSlots.indexOf(slot);
     const isRotated = playerCount === 2 ? index === 0 : index < 2;
-    if (!isRotated) return [1, 2, 3, 4];
-    return [4, 3, 2, 1];
+    return isRotated ? [...allIds].reverse() : allIds;
   };
 
   return (
@@ -497,7 +509,9 @@ export default function App() {
         const isRotated = playerCount === 2 ? index === 0 : index < 2;
         const displayName = slot.player ? slot.player.name : slot.label;
         const isStartingPlayer = startingPlayerId === slot.id;
-        const is3PlayerSpannedRow = playerCount === 3 && index === 2;
+        const isSpannedRow =
+          (playerCount === 3 && index === 2) ||
+          (playerCount === 5 && index === 4);
 
         const isLethalPoison = slot.poison >= 10;
         const lethalCommanderDamage = Object.values(slot.commanderDamage).some(
@@ -516,7 +530,7 @@ export default function App() {
               isStartingPlayer
                 ? "border-yellow-500 shadow-[inset_0_0_20px_rgba(234,179,8,0.15)]"
                 : "border-neutral-800"
-            } ${isRotated ? "rotate-180" : ""} ${is3PlayerSpannedRow ? "col-span-2" : ""}`}
+            } ${isRotated ? "rotate-180" : ""} ${isSpannedRow ? "col-span-2" : ""}`}
           >
             {/* Background Art */}
             {slot.bgImage && (
@@ -856,8 +870,8 @@ export default function App() {
               <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
                 <Users size={12} /> Pod Size
               </label>
-              <div className="grid grid-cols-3 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
-                {[2, 3, 4].map((num) => (
+              <div className="grid grid-cols-4 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+                {[2, 3, 4, 5].map((num) => (
                   <button
                     key={num}
                     onClick={() => {
@@ -1348,7 +1362,8 @@ export default function App() {
             (s) => s.id === activeCmdModifier.targetSlotId,
           );
           if (!targetSlot) return null;
-          const cmdOrder = targetSlot.id <= 2 ? [4, 3, 2, 1] : [1, 2, 3, 4];
+          const allIds = Array.from({ length: playerCount }, (_, i) => i + 1);
+          const cmdOrder = targetSlot.id <= 2 ? [...allIds].reverse() : allIds;
           return (
             <div
               className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center"
