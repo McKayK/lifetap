@@ -91,6 +91,12 @@ export default function App() {
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
+  // Coin flip state
+  const [showCoinFlip, setShowCoinFlip] = useState(false);
+  const [coinFlipCount, setCoinFlipCount] = useState(1);
+  const [coinFlipResults, setCoinFlipResults] = useState([]);
+  const [isFlipping, setIsFlipping] = useState(false);
+
   // Win screen state
   const [winner, setWinner] = useState(null);
   const autoWinTriggered = useRef(false);
@@ -112,6 +118,26 @@ export default function App() {
   useEffect(() => {
     fetchPlayers();
     fetchGameHistory();
+
+    let wakeLock = null;
+    const requestWakeLock = async () => {
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+      } catch (err) {
+        console.log("Wake lock not supported:", err);
+      }
+    };
+    requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") requestWakeLock();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLock) wakeLock.release();
+    };
   }, []);
 
   useEffect(() => {
@@ -463,7 +489,12 @@ export default function App() {
     const currentVisible = slots.slice(0, playerCount);
     const activePlayers = currentVisible.filter((s) => s.player);
     if (activePlayers.length < 2) return;
-    const alive = activePlayers.filter((s) => s.life > 0);
+    const alive = activePlayers.filter((s) => {
+      const lethalCmd = Object.values(s.commanderDamage).some(
+        (dmg) => dmg >= 21,
+      );
+      return s.life > 0 && !lethalCmd;
+    });
     if (alive.length === 1) {
       autoWinTriggered.current = true;
       setWinner(alive[0]);
@@ -537,6 +568,7 @@ export default function App() {
                 : "border-neutral-800"
             } ${isRotated ? "rotate-180" : ""} ${isSpannedRow ? "col-span-2" : ""}`}
           >
+            {/* Background Art */}
             {slot.bgImage && (
               <div
                 className={`absolute inset-0 bg-cover ${
@@ -544,9 +576,19 @@ export default function App() {
                 }`}
                 style={{
                   backgroundImage: `url(${slot.bgImage})`,
-                  filter: "brightness(0.55) contrast(1.15)",
+                  filter: "brightness(0.75) contrast(1.15)",
                 }}
               />
+            )}
+
+            {/* Overshield overlay */}
+            {slot.life > 40 && (
+              <div className="absolute inset-0 z-[1] pointer-events-none bg-emerald-400 animate-overshield rounded-2xl" />
+            )}
+
+            {/* Low health overlay */}
+            {slot.life <= 15 && slot.life > 0 && (
+              <div className="absolute inset-0 z-[1] pointer-events-none bg-red-600 animate-heartbeat rounded-2xl" />
             )}
 
             <div className="absolute inset-0 flex">
@@ -824,6 +866,17 @@ export default function App() {
             >
               <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
               Game History
+            </button>
+
+            <button
+              onClick={() => {
+                setShowControlHub(false);
+                setShowCoinFlip(true);
+                setCoinFlipResults([]);
+              }}
+              className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+            >
+              🪙 Coin Flip
             </button>
 
             <button
@@ -1340,8 +1393,8 @@ export default function App() {
                             backgroundImage: `url(${opp.bgImage})`,
                             filter:
                               amt > 0
-                                ? "brightness(0.35) contrast(1.2) sepia(0.4)"
-                                : "brightness(0.25) contrast(1.1)",
+                                ? "brightness(0.65) contrast(1.2) sepia(0.4)"
+                                : "brightness(0.55) contrast(1.1)",
                           }}
                         />
                       ) : (
@@ -1422,7 +1475,103 @@ export default function App() {
           );
         })()}
 
-      {/* 7. WIN SCREEN */}
+      {/* 7. COIN FLIP MODAL */}
+      {showCoinFlip && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onPointerDown={() => setShowCoinFlip(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200">
+                🪙 Coin Flip
+              </h2>
+              <button
+                onClick={() => setShowCoinFlip(false)}
+                className="p-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5">
+                Number of Flips
+              </label>
+              <div className="flex items-center gap-3 justify-center">
+                <button
+                  onClick={() => setCoinFlipCount((c) => Math.max(1, c - 1))}
+                  className="w-10 h-10 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-black text-xl text-neutral-200 active:scale-90 transition-all"
+                >
+                  −
+                </button>
+                <span className="text-3xl font-black text-white w-12 text-center tabular-nums">
+                  {coinFlipCount}
+                </span>
+                <button
+                  onClick={() => setCoinFlipCount((c) => Math.min(20, c + 1))}
+                  className="w-10 h-10 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-black text-xl text-neutral-200 active:scale-90 transition-all"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setIsFlipping(true);
+                setCoinFlipResults([]);
+                setTimeout(() => {
+                  const results = Array.from({ length: coinFlipCount }, () =>
+                    Math.random() < 0.5 ? "heads" : "tails",
+                  );
+                  setCoinFlipResults(results);
+                  setIsFlipping(false);
+                }, 600);
+              }}
+              disabled={isFlipping}
+              className="w-full py-3 bg-yellow-600 hover:bg-yellow-500 disabled:bg-neutral-800 text-white font-black rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+            >
+              {isFlipping
+                ? "Flipping..."
+                : `Flip ${coinFlipCount === 1 ? "1 Coin" : `${coinFlipCount} Coins`}`}
+            </button>
+
+            {coinFlipResults.length > 0 && !isFlipping && (
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between text-xs font-bold px-1">
+                  <span className="text-yellow-400">
+                    👑 Heads:{" "}
+                    {coinFlipResults.filter((r) => r === "heads").length}
+                  </span>
+                  <span className="text-neutral-400">
+                    Tails: {coinFlipResults.filter((r) => r === "tails").length}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {coinFlipResults.map((result, i) => (
+                    <div
+                      key={i}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center text-lg border-2 ${
+                        result === "heads"
+                          ? "bg-yellow-500/20 border-yellow-500/50"
+                          : "bg-neutral-800 border-neutral-700"
+                      }`}
+                    >
+                      {result === "heads" ? "👑" : "🌑"}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 8. WIN SCREEN */}
       {winner && (
         <div className="absolute inset-0 z-[60] flex items-center justify-center">
           {winner.bgImage && (

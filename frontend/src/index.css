@@ -12,6 +12,12 @@ body {
     sans-serif;
   overflow: hidden; /* Keeps our app feeling like a native full-screen mobile app */
 }
+
 * {
   touch-action: manipulation;
+}
+
+* {
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
 }
