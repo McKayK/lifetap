@@ -263,4 +263,16 @@ app.delete("/api/games/:id", (req, res) => {
   });
 });
 
+app.post("/api/players/:id/set-wins", (req, res) => {
+  const { wins } = req.body;
+  db.run(
+    "UPDATE players SET wins = ? WHERE id = ?",
+    [wins, req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true });
+    },
+  );
+});
+
 app.listen(5000, () => console.log("Backend running on port 5000"));
