@@ -240,14 +240,39 @@ app.get("/api/games", (req, res) => {
   );
 });
 
-// Delete a single game log entry
+// Delete a single game log entry and decrement the winner's win count
 app.delete("/api/games/:id", (req, res) => {
-  db.run("DELETE FROM games WHERE id = ?", [req.params.id], function (err) {
+  // First fetch the game so we know who the winner was
+  db.get("SELECT * FROM games WHERE id = ?", [req.params.id], (err, game) => {
     if (err) return res.status(500).json({ error: err.message });
-    if (this.changes === 0)
-      return res.status(404).json({ error: "Game not found" });
-    res.json({ success: true });
+    if (!game) return res.status(404).json({ error: "Game not found" });
+
+    db.run("DELETE FROM games WHERE id = ?", [req.params.id], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Decrement the winner's win count, floor at 0
+      db.run(
+        "UPDATE players SET wins = MAX(0, wins - 1) WHERE id = ?",
+        [game.winner_id],
+        function (err) {
+          if (err) console.error("Error decrementing wins:", err.message);
+          res.json({ success: true, winner_id: game.winner_id });
+        },
+      );
+    });
   });
+});
+
+app.post("/api/players/:id/set-wins", (req, res) => {
+  const { wins } = req.body;
+  db.run(
+    "UPDATE players SET wins = ? WHERE id = ?",
+    [wins, req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true });
+    },
+  );
 });
 
 app.listen(5000, () => console.log("Backend running on port 5000"));

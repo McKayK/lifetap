@@ -7,7 +7,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - lifetap-db:/app/data
+      - ./data:/app/data
       - ./custom-art:/app/public/custom-art
     restart: unless-stopped
     networks:
@@ -23,10 +23,6 @@ services:
       - backend
     networks:
       - npm-network
-
-volumes:
-  lifetap-db:
-    driver: local
 
 networks:
   npm-network:

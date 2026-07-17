@@ -21,7 +21,6 @@ export default function App() {
       life: 40,
       bgImage: "",
       commanderName: "",
-      poison: 0,
       killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
@@ -32,7 +31,6 @@ export default function App() {
       life: 40,
       bgImage: "",
       commanderName: "",
-      poison: 0,
       killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
@@ -43,7 +41,6 @@ export default function App() {
       life: 40,
       bgImage: "",
       commanderName: "",
-      poison: 0,
       killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
@@ -54,7 +51,6 @@ export default function App() {
       life: 40,
       bgImage: "",
       commanderName: "",
-      poison: 0,
       killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
@@ -65,7 +61,6 @@ export default function App() {
       life: 40,
       bgImage: "",
       commanderName: "",
-      poison: 0,
       killedBySlotId: null,
       commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     },
@@ -87,21 +82,25 @@ export default function App() {
   const longPressRefs = useRef({});
   const pointerDownOnTapTarget = useRef({});
 
-  // Life delta display per slot: { slotId: { amount, timeoutId } }
   const [lifeDeltas, setLifeDeltas] = useState({});
-
-  // Scryfall & Favorites States
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [playerFavorites, setPlayerFavorites] = useState([]);
-
-  // Match Control States
   const [showControlHub, setShowControlHub] = useState(false);
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
-  // const BACKEND_URL = "http://localhost:5000/api";
+  // Coin flip state
+  const [showCoinFlip, setShowCoinFlip] = useState(false);
+  const [coinFlipCount, setCoinFlipCount] = useState(1);
+  const [coinFlipResults, setCoinFlipResults] = useState([]);
+  const [isFlipping, setIsFlipping] = useState(false);
+
+  // Win screen state
+  const [winner, setWinner] = useState(null);
+  const autoWinTriggered = useRef(false);
+
   const BACKEND_URL = "https://life.mckaykleinman.com/api";
 
   const visibleSlots = slots.slice(0, playerCount);
@@ -119,6 +118,26 @@ export default function App() {
   useEffect(() => {
     fetchPlayers();
     fetchGameHistory();
+
+    let wakeLock = null;
+    const requestWakeLock = async () => {
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+      } catch (err) {
+        console.log("Wake lock not supported:", err);
+      }
+    };
+    requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") requestWakeLock();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLock) wakeLock.release();
+    };
   }, []);
 
   useEffect(() => {
@@ -173,8 +192,33 @@ export default function App() {
 
   const handleDeleteGameEntry = async (gameId) => {
     try {
-      await fetch(`${BACKEND_URL}/games/${gameId}`, { method: "DELETE" });
+      const res = await fetch(`${BACKEND_URL}/games/${gameId}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
       setGameHistory((prev) => prev.filter((g) => g.id !== gameId));
+      if (data.winner_id) {
+        setDbPlayers((prev) =>
+          prev.map((p) =>
+            p.id === data.winner_id
+              ? { ...p, wins: Math.max(0, (p.wins || 0) - 1) }
+              : p,
+          ),
+        );
+        setSlots((prev) =>
+          prev.map((s) =>
+            s.player?.id === data.winner_id
+              ? {
+                  ...s,
+                  player: {
+                    ...s.player,
+                    wins: Math.max(0, (s.player.wins || 0) - 1),
+                  },
+                }
+              : s,
+          ),
+        );
+      }
     } catch (err) {
       console.error("Error deleting game entry:", err);
     }
@@ -322,7 +366,6 @@ export default function App() {
     );
   };
 
-  // Shows a floating delta (+/-) on a slot for 1.5s, accumulating if tapped rapidly
   const showLifeDelta = (id, amount) => {
     setLifeDeltas((prev) => {
       const existing = prev[id];
@@ -352,14 +395,6 @@ export default function App() {
     });
   };
 
-  const updatePoison = (id, amount) => {
-    setSlots(
-      slots.map((s) =>
-        s.id === id ? { ...s, poison: Math.max(0, s.poison + amount) } : s,
-      ),
-    );
-  };
-
   const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
     setSlots(
       slots.map((s) => {
@@ -380,7 +415,6 @@ export default function App() {
         return s;
       }),
     );
-    // Also show delta on the target slot
     showLifeDelta(targetSlotId, -amount);
   };
 
@@ -390,7 +424,6 @@ export default function App() {
       slots.map((s) => ({
         ...s,
         life: 40,
-        poison: 0,
         commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
         killedBySlotId: null,
       })),
@@ -400,6 +433,8 @@ export default function App() {
     setLifeHistory({});
     setLifeDeltas({});
     setTurnCount(1);
+    autoWinTriggered.current = false;
+    setWinner(null);
 
     let counter = 0;
     const maxTicks = 10;
@@ -426,8 +461,8 @@ export default function App() {
         method: "POST",
       });
       if (res.ok) {
-        const winner = slots.find((s) => s.player?.id === playerId)?.player;
-        await handleLogGame(playerId, winner?.name || "Unknown");
+        const winnerSlot = slots.find((s) => s.player?.id === playerId)?.player;
+        await handleLogGame(playerId, winnerSlot?.name || "Unknown");
         fetchPlayers();
         fetchGameHistory();
         setSlots(
@@ -447,6 +482,25 @@ export default function App() {
       console.error("Error recording match win:", err);
     }
   };
+
+  // Auto-win: placed after handleRecordWin so it can call it directly
+  useEffect(() => {
+    if (autoWinTriggered.current) return;
+    const currentVisible = slots.slice(0, playerCount);
+    const activePlayers = currentVisible.filter((s) => s.player);
+    if (activePlayers.length < 2) return;
+    const alive = activePlayers.filter((s) => {
+      const lethalCmd = Object.values(s.commanderDamage).some(
+        (dmg) => dmg >= 21,
+      );
+      return s.life > 0 && !lethalCmd;
+    });
+    if (alive.length === 1) {
+      autoWinTriggered.current = true;
+      setWinner(alive[0]);
+      handleRecordWin(alive[0].player.id);
+    }
+  }, [slots, playerCount]);
 
   const getActiveSlotPlayer = () =>
     slots.find((s) => s.id === activeMenuSlot)?.player;
@@ -477,22 +531,6 @@ export default function App() {
     return streak;
   };
 
-  const getNemesis = (slot) => {
-    const entries = Object.entries(slot.commanderDamage).filter(
-      ([id, dmg]) => parseInt(id) !== slot.id && dmg > 0,
-    );
-    if (entries.length === 0) return null;
-    const [nemesisId, dmg] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
-    const nemesisSlot = slots.find((s) => s.id === parseInt(nemesisId));
-    if (!nemesisSlot) return null;
-    return { name: getShortName(nemesisSlot), dmg };
-  };
-
-  const getCommanderName = (slot) => slot.commanderName || "";
-
-  // Which grid position each slot is in (for commander damage label orientation fix)
-  // Slots 1 & 2 are rotated 180deg (top row), slots 3+ are normal (bottom rows)
-  // So for a rotated slot: its own position in the grid is mirrored
   const getCmdDamageGridOrder = (slot) => {
     const allIds = Array.from({ length: playerCount }, (_, i) => i + 1);
     const index = visibleSlots.indexOf(slot);
@@ -513,12 +551,10 @@ export default function App() {
           (playerCount === 3 && index === 2) ||
           (playerCount === 5 && index === 4);
 
-        const isLethalPoison = slot.poison >= 10;
         const lethalCommanderDamage = Object.values(slot.commanderDamage).some(
           (dmg) => dmg >= 21,
         );
-        const isDefeated =
-          slot.life <= 0 || lethalCommanderDamage || isLethalPoison;
+        const isDefeated = slot.life <= 0 || lethalCommanderDamage;
 
         const delta = lifeDeltas[slot.id];
         const cmdOrder = getCmdDamageGridOrder(slot);
@@ -540,13 +576,21 @@ export default function App() {
                 }`}
                 style={{
                   backgroundImage: `url(${slot.bgImage})`,
-                  filter: "brightness(0.55) contrast(1.15)",
+                  filter: "brightness(0.75) contrast(1.15)",
                 }}
               />
             )}
 
-            {/* Tap Targets — z-0, split left/right */}
-            {/* Tap Targets — z-0, split left/right */}
+            {/* Overshield overlay */}
+            {slot.life > 40 && (
+              <div className="absolute inset-0 z-[1] pointer-events-none bg-emerald-400 animate-overshield rounded-2xl" />
+            )}
+
+            {/* Low health overlay */}
+            {slot.life <= 15 && slot.life > 0 && (
+              <div className="absolute inset-0 z-[1] pointer-events-none bg-red-600 animate-heartbeat rounded-2xl" />
+            )}
+
             <div className="absolute inset-0 flex">
               <div
                 onPointerDown={(e) => {
@@ -634,11 +678,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* UI Content Layer — pointer-events-none by default, children opt in */}
             <div className="relative z-10 flex flex-col items-center justify-between h-full w-full p-3 pointer-events-none">
-              {/* TOP ROW: Name | Commander Badge | Settings */}
               <div className="flex justify-between w-full items-start pointer-events-none gap-2">
-                {/* LEFT: Player Name + nemesis + poison stacked */}
                 <div className="flex flex-col gap-1 items-start pointer-events-none">
                   <span
                     className={`font-bold text-sm tracking-wide flex items-center gap-1 bg-black/50 px-3 py-1 rounded-full border ${
@@ -652,68 +693,8 @@ export default function App() {
                       <span className="text-sm">🔥</span>
                     )}
                   </span>
-
-                  {/* Nemesis badge — under name */}
-                  {(() => {
-                    const nemesis = getNemesis(slot);
-                    return nemesis ? (
-                      <div className="flex items-center gap-1.5 bg-black/50 border border-red-900/40 px-3 py-1 rounded-full">
-                        <span className="text-sm font-black text-red-400">
-                          ⚔️
-                        </span>
-                        <span className="text-xs font-black uppercase tracking-wide text-red-400">
-                          {nemesis.name}
-                        </span>
-                        <span className="text-sm font-black text-red-300 tabular-nums">
-                          {nemesis.dmg}
-                        </span>
-                      </div>
-                    ) : null;
-                  })()}
-
-                  {/* Poison counter — under nemesis */}
-                  <div className="flex items-center gap-1.5 bg-black/50 border border-neutral-800/60 px-2 py-1 rounded-full pointer-events-auto">
-                    <button
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        updatePoison(slot.id, -1);
-                      }}
-                      className="w-5 h-5 flex items-center justify-center bg-neutral-800 text-neutral-400 font-black text-xs rounded-full active:scale-90"
-                    >
-                      −
-                    </button>
-                    <span
-                      className={`text-xs ${slot.poison >= 10 ? "text-green-400" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-500"}`}
-                    >
-                      🧪
-                    </span>
-                    <span
-                      className={`text-xs font-black tabular-nums ${slot.poison >= 10 ? "text-green-400" : slot.poison >= 7 ? "text-yellow-400" : "text-neutral-400"}`}
-                    >
-                      {slot.poison}/10
-                    </span>
-                    <button
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        updatePoison(slot.id, 1);
-                      }}
-                      className="w-5 h-5 flex items-center justify-center bg-neutral-800 text-neutral-400 font-black text-xs rounded-full active:scale-90"
-                    >
-                      +
-                    </button>
-                  </div>
                 </div>
 
-                {/* MIDDLE: Commander Name Badge */}
-                {slot.bgImage && (
-                  <div className="absolute left-1/2 -translate-x-1/2 top-3 bg-black/60 border border-neutral-800 px-3 py-1 rounded-md max-w-[120px] sm:max-w-[160px] truncate shadow-md">
-                    <span className="text-[10px] font-black tracking-wide text-neutral-300 uppercase block truncate">
-                      {getCommanderName(slot)}
-                    </span>
-                  </div>
-                )}
-
-                {/* RIGHT: Settings Button — bigger */}
                 <button
                   onPointerDown={(e) => {
                     e.stopPropagation();
@@ -729,12 +710,10 @@ export default function App() {
                 </button>
               </div>
 
-              {/* LIFE TOTAL + DELTA */}
               <div className="flex flex-col items-center justify-center my-auto relative">
                 <span className="text-7xl sm:text-8xl md:text-9xl font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums">
                   {slot.life}
                 </span>
-                {/* Floating delta */}
                 {delta && (
                   <span
                     key={delta.amount}
@@ -747,11 +726,8 @@ export default function App() {
                 )}
               </div>
 
-              {/* LOWER FOOTER — pointer-events-none wrapper, children opt in */}
               <div className="w-full flex flex-col items-center gap-2 pointer-events-none">
-                {/* Commander damage panel or matrix */}
                 <div className="pointer-events-auto">
-                  {/* MINI DISPLAY — one button showing damage totals, no interaction */}
                   <button
                     onPointerDown={(e) => {
                       e.stopPropagation();
@@ -803,31 +779,22 @@ export default function App() {
               </div>
             </div>
 
-            {/* DEFEATED OVERLAY */}
             {isDefeated && (
               <div className="absolute inset-0 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 pointer-events-none select-none">
-                <span className="text-5xl opacity-90">
-                  {isLethalPoison ? "🧪" : "💀"}
-                </span>
+                <span className="text-5xl opacity-90">💀</span>
                 <span className="text-xs font-black uppercase tracking-widest text-red-500">
-                  {isLethalPoison
-                    ? "Poison Lethal"
-                    : lethalCommanderDamage
-                      ? "Commander Lethal"
-                      : "Defeated"}
+                  {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
                 </span>
-                {lethalCommanderDamage &&
-                  !isLethalPoison &&
-                  slot.killedBySlotId && (
-                    <span className="text-[11px] font-bold text-neutral-400 tracking-wide mt-0.5">
-                      by{" "}
-                      <span className="text-red-400">
-                        {getShortName(
-                          slots.find((s) => s.id === slot.killedBySlotId),
-                        )}
-                      </span>
+                {lethalCommanderDamage && slot.killedBySlotId && (
+                  <span className="text-[11px] font-bold text-neutral-400 tracking-wide mt-0.5">
+                    by{" "}
+                    <span className="text-red-400">
+                      {getShortName(
+                        slots.find((s) => s.id === slot.killedBySlotId),
+                      )}
                     </span>
-                  )}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -899,6 +866,17 @@ export default function App() {
             >
               <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
               Game History
+            </button>
+
+            <button
+              onClick={() => {
+                setShowControlHub(false);
+                setShowCoinFlip(true);
+                setCoinFlipResults([]);
+              }}
+              className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+            >
+              🪙 Coin Flip
             </button>
 
             <button
@@ -1334,11 +1312,7 @@ export default function App() {
                         {game.player_count}P • T{game.turns} •{" "}
                         {new Date(game.played_at + "Z").toLocaleDateString(
                           "en-US",
-                          {
-                            month: "short",
-                            day: "numeric",
-                            year: "numeric",
-                          },
+                          { month: "short", day: "numeric", year: "numeric" },
                         )}
                       </span>
                     </div>
@@ -1355,7 +1329,8 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* COMMANDER DAMAGE POPUP */}
+
+      {/* 6. COMMANDER DAMAGE POPUP */}
       {activeCmdModifier &&
         (() => {
           const targetSlot = slots.find(
@@ -1370,12 +1345,11 @@ export default function App() {
               onPointerDown={(e) => {
                 e.stopPropagation();
                 setActiveCmdModifier(null);
+                setEditingCmdSlot(null);
               }}
             >
               <div
-                className={`grid grid-cols-2 gap-3 p-4 w-[90vw] max-w-sm ${
-                  targetSlot.id <= 2 ? "rotate-180" : ""
-                }`}
+                className={`grid grid-cols-2 gap-3 p-4 w-[90vw] max-w-sm ${targetSlot.id <= 2 ? "rotate-180" : ""}`}
                 onPointerDown={(e) => e.stopPropagation()}
               >
                 {cmdOrder.map((oppId) => {
@@ -1410,18 +1384,32 @@ export default function App() {
                   return (
                     <div
                       key={opp.id}
-                      className={`h-32 rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${
-                        amt > 0
-                          ? "bg-red-950/40 border-red-700/50"
-                          : "bg-neutral-900 border-neutral-700"
-                      }`}
+                      className={`h-32 rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${amt > 0 ? "border-red-700/50" : "border-neutral-700"}`}
                     >
+                      {opp.bgImage ? (
+                        <div
+                          className="absolute inset-0 bg-cover bg-top"
+                          style={{
+                            backgroundImage: `url(${opp.bgImage})`,
+                            filter:
+                              amt > 0
+                                ? "brightness(0.65) contrast(1.2) sepia(0.4)"
+                                : "brightness(0.55) contrast(1.1)",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className={`absolute inset-0 ${amt > 0 ? "bg-red-950/40" : "bg-neutral-900"}`}
+                        />
+                      )}
+                      <span className="absolute top-2 left-0 right-0 text-center text-[10px] font-black uppercase tracking-widest text-white/60 z-10 px-1 truncate">
+                        {getShortName(opp)}
+                      </span>
                       <span
-                        className={`text-4xl font-black tabular-nums pointer-events-none z-10 ${amt > 0 ? "text-red-400" : "text-neutral-500"}`}
+                        className={`text-4xl font-black tabular-nums pointer-events-none z-10 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)] ${amt > 0 ? "text-red-400" : "text-neutral-400"}`}
                       >
                         {amt}
                       </span>
-                      {/* Track long press per opponent */}
                       <div className="absolute inset-0 flex">
                         {editingCmdSlot === opp.id ? (
                           <>
@@ -1486,6 +1474,147 @@ export default function App() {
             </div>
           );
         })()}
+
+      {/* 7. COIN FLIP MODAL */}
+      {showCoinFlip && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onPointerDown={() => setShowCoinFlip(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200">
+                🪙 Coin Flip
+              </h2>
+              <button
+                onClick={() => setShowCoinFlip(false)}
+                className="p-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5">
+                Number of Flips
+              </label>
+              <div className="flex items-center gap-3 justify-center">
+                <button
+                  onClick={() => setCoinFlipCount((c) => Math.max(1, c - 1))}
+                  className="w-10 h-10 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-black text-xl text-neutral-200 active:scale-90 transition-all"
+                >
+                  −
+                </button>
+                <span className="text-3xl font-black text-white w-12 text-center tabular-nums">
+                  {coinFlipCount}
+                </span>
+                <button
+                  onClick={() => setCoinFlipCount((c) => Math.min(20, c + 1))}
+                  className="w-10 h-10 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-black text-xl text-neutral-200 active:scale-90 transition-all"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setIsFlipping(true);
+                setCoinFlipResults([]);
+                setTimeout(() => {
+                  const results = Array.from({ length: coinFlipCount }, () =>
+                    Math.random() < 0.5 ? "heads" : "tails",
+                  );
+                  setCoinFlipResults(results);
+                  setIsFlipping(false);
+                }, 600);
+              }}
+              disabled={isFlipping}
+              className="w-full py-3 bg-yellow-600 hover:bg-yellow-500 disabled:bg-neutral-800 text-white font-black rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+            >
+              {isFlipping
+                ? "Flipping..."
+                : `Flip ${coinFlipCount === 1 ? "1 Coin" : `${coinFlipCount} Coins`}`}
+            </button>
+
+            {coinFlipResults.length > 0 && !isFlipping && (
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between text-xs font-bold px-1">
+                  <span className="text-yellow-400">
+                    👑 Heads:{" "}
+                    {coinFlipResults.filter((r) => r === "heads").length}
+                  </span>
+                  <span className="text-neutral-400">
+                    Tails: {coinFlipResults.filter((r) => r === "tails").length}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {coinFlipResults.map((result, i) => (
+                    <div
+                      key={i}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center text-lg border-2 ${
+                        result === "heads"
+                          ? "bg-yellow-500/20 border-yellow-500/50"
+                          : "bg-neutral-800 border-neutral-700"
+                      }`}
+                    >
+                      {result === "heads" ? "👑" : "🌑"}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 8. WIN SCREEN */}
+      {winner && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center">
+          {winner.bgImage && (
+            <div
+              className="absolute inset-0 bg-cover bg-center"
+              style={{
+                backgroundImage: `url(${winner.bgImage})`,
+                filter: "brightness(0.3) blur(8px) saturate(1.5)",
+                transform: "scale(1.05)",
+              }}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/60" />
+          <div className="relative z-10 flex flex-col items-center gap-6 px-8 text-center">
+            <div className="text-6xl animate-bounce">👑</div>
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-xs font-black uppercase tracking-[0.3em] text-yellow-400/80">
+                Winner
+              </span>
+              <span className="text-5xl font-black text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.9)]">
+                {winner.player.name}
+              </span>
+              {winner.commanderName && (
+                <span className="text-sm font-bold text-neutral-400 uppercase tracking-widest mt-1">
+                  {winner.commanderName}
+                </span>
+              )}
+            </div>
+            <span className="text-sm text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full">
+              🏆 {(winner.player.wins || 0) + 1} lifetime wins
+            </span>
+            <button
+              onClick={() => {
+                setShowControlHub(true);
+                setWinner(null);
+              }}
+              className="mt-2 px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
+            >
+              Reset & Roll Next Game
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

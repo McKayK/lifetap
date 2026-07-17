@@ -10,73 +10,101 @@ import {
   Dices,
   Layers,
   Users,
+  BarChart3,
+  Heart,
 } from "lucide-react";
 
+// ---------------------------------------------------------------------------
+// TABLE LAYOUTS — the single source of truth for where each seat physically
+// sits on the device. row/col/span describe the seat's cell in the main grid,
+// rotated marks seats whose tiles render upside-down (players across the
+// table). The commander damage mini-grid and popup both derive their box
+// positions from this, so they always mirror the actual table.
+// ---------------------------------------------------------------------------
+const TABLE_LAYOUTS = {
+  2: {
+    rows: 2,
+    cols: 1,
+    cells: [
+      { row: 0, col: 0, span: 1, rotated: true },
+      { row: 1, col: 0, span: 1, rotated: false },
+    ],
+  },
+  3: {
+    rows: 2,
+    cols: 2,
+    cells: [
+      { row: 0, col: 0, span: 1, rotated: true },
+      { row: 0, col: 1, span: 1, rotated: true },
+      { row: 1, col: 0, span: 2, rotated: false },
+    ],
+  },
+  4: {
+    rows: 2,
+    cols: 2,
+    cells: [
+      { row: 0, col: 0, span: 1, rotated: true },
+      { row: 0, col: 1, span: 1, rotated: true },
+      { row: 1, col: 0, span: 1, rotated: false },
+      { row: 1, col: 1, span: 1, rotated: false },
+    ],
+  },
+  5: {
+    rows: 3,
+    cols: 2,
+    cells: [
+      { row: 0, col: 0, span: 1, rotated: true },
+      { row: 0, col: 1, span: 1, rotated: true },
+      { row: 1, col: 0, span: 1, rotated: false },
+      { row: 1, col: 1, span: 1, rotated: false },
+      { row: 2, col: 0, span: 2, rotated: false },
+    ],
+  },
+};
+
+// Where should seat `seatIndex`'s box be placed inside a grid that belongs to
+// the viewer at `viewerIndex`? If the viewer's container is rotated 180° (top
+// seats), we place cells at the 180°-rotated grid position so that, after the
+// CSS rotation flips them back, every box lands in the same direction as the
+// actual person at the table. Reversing a flat ID list (the old approach)
+// only works for a full rectangle — this works for 3P and 5P layouts too.
+const getSeatCell = (playerCount, seatIndex, viewerIndex) => {
+  const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
+  const cell = layout.cells[seatIndex];
+  const viewerRotated = layout.cells[viewerIndex]?.rotated;
+  if (!viewerRotated) return cell;
+  return {
+    ...cell,
+    row: layout.rows - 1 - cell.row,
+    col: layout.cols - 1 - cell.col - (cell.span - 1),
+  };
+};
+
 export default function App() {
-  const [slots, setSlots] = useState([
-    {
-      id: 1,
-      label: "Slot 1",
-      player: null,
-      life: 40,
-      bgImage: "",
-      commanderName: "",
-      killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-    },
-    {
-      id: 2,
-      label: "Slot 2",
-      player: null,
-      life: 40,
-      bgImage: "",
-      commanderName: "",
-      killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-    },
-    {
-      id: 3,
-      label: "Slot 3",
-      player: null,
-      life: 40,
-      bgImage: "",
-      commanderName: "",
-      killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-    },
-    {
-      id: 4,
-      label: "Slot 4",
-      player: null,
-      life: 40,
-      bgImage: "",
-      commanderName: "",
-      killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-    },
-    {
-      id: 5,
-      label: "Slot 5",
-      player: null,
-      life: 40,
-      bgImage: "",
-      commanderName: "",
-      killedBySlotId: null,
-      commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-    },
-  ]);
+  const makeSlot = (id) => ({
+    id,
+    label: `Slot ${id}`,
+    player: null,
+    life: 40,
+    bgImage: "",
+    commanderName: "",
+    killedBySlotId: null,
+    commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+  });
+
+  const [slots, setSlots] = useState([1, 2, 3, 4, 5].map(makeSlot));
 
   const [playerCount, setPlayerCount] = useState(4);
+  const [startingLife, setStartingLife] = useState(40);
   const [dbPlayers, setDbPlayers] = useState([]);
   const [activeMenuSlot, setActiveMenuSlot] = useState(null);
   const [newPlayerName, setNewPlayerName] = useState("");
-  const [activeCmdModifier, setActiveCmdModifier] = useState(null);
+  const [activeCmdSlotId, setActiveCmdSlotId] = useState(null);
   const [renamingPlayerId, setRenamingPlayerId] = useState(null);
   const [renameValue, setRenameValue] = useState("");
-  const [lifeHistory, setLifeHistory] = useState({});
   const [showHistory, setShowHistory] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const [gameHistory, setGameHistory] = useState([]);
-  const [turnCount, setTurnCount] = useState(1);
   const [editingCmdSlot, setEditingCmdSlot] = useState(null);
 
   const longPressRefs = useRef({});
@@ -91,19 +119,51 @@ export default function App() {
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
 
-  // Coin flip state
+  // Monarch / Initiative designations (slot ids)
+  const [monarchSlotId, setMonarchSlotId] = useState(null);
+  const [initiativeSlotId, setInitiativeSlotId] = useState(null);
+
+  // Temporarily allow life adjustments on a defeated slot
+  const [adjustingSlotId, setAdjustingSlotId] = useState(null);
+  const adjustTimerRef = useRef(null);
+
+  // Coin flip + dice state
   const [showCoinFlip, setShowCoinFlip] = useState(false);
   const [coinFlipCount, setCoinFlipCount] = useState(1);
   const [coinFlipResults, setCoinFlipResults] = useState([]);
   const [isFlipping, setIsFlipping] = useState(false);
+  const [diceResults, setDiceResults] = useState(null); // { sides, values }
+  const [isRollingDice, setIsRollingDice] = useState(false);
 
-  // Win screen state
+  // Win screen state — a win is PENDING until confirmed, so an accidental
+  // tap that drops the last opponent to 0 never writes to the database.
   const [winner, setWinner] = useState(null);
+  const [winConfirmed, setWinConfirmed] = useState(false);
   const autoWinTriggered = useRef(false);
 
-  const BACKEND_URL = "https://life.mckaykleinman.com/api";
+  // Configurable via .env (VITE_API_URL) so local dev doesn't require
+  // editing source. Falls back to the production deployment.
+  const BACKEND_URL =
+    import.meta.env.VITE_API_URL || "https://life.mckaykleinman.com/api";
+  const ASSET_ORIGIN = BACKEND_URL.replace(/\/api\/?$/, "");
+
+  // Custom uploads are stored as relative paths ("/custom-art/...") so they
+  // survive domain/IP changes. Older rows may still hold absolute URLs.
+  const resolveArt = (url) => {
+    if (!url) return "";
+    return url.startsWith("http") ? url : `${ASSET_ORIGIN}${url}`;
+  };
 
   const visibleSlots = slots.slice(0, playerCount);
+  const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
+
+  // Lethal commander damage — only counts opponents actually in the current
+  // pod, so shrinking the pod size mid-game can't kill someone with damage
+  // from a now-hidden seat.
+  const isLethalCmd = (slot) =>
+    Object.entries(slot.commanderDamage).some(
+      ([oppId, dmg]) => Number(oppId) <= playerCount && dmg >= 21,
+    );
 
   const fetchGameHistory = async () => {
     try {
@@ -112,6 +172,25 @@ export default function App() {
       setGameHistory(data);
     } catch (err) {
       console.error("Error fetching game history:", err);
+    }
+  };
+
+  // Fetching players also re-syncs any slot that holds a snapshot of that
+  // player, so win counts shown on tiles/menus never go stale.
+  const fetchPlayers = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/players`);
+      const data = await res.json();
+      setDbPlayers(data);
+      setSlots((prev) =>
+        prev.map((s) =>
+          s.player
+            ? { ...s, player: data.find((p) => p.id === s.player.id) || s.player }
+            : s,
+        ),
+      );
+    } catch (err) {
+      console.error("Error fetching players:", err);
     }
   };
 
@@ -140,28 +219,17 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (activeMenuSlot) {
-      const currentSlot = slots.find((s) => s.id === activeMenuSlot);
-      if (currentSlot && currentSlot.player) {
-        fetchFavorites(currentSlot.player.id);
-      } else {
-        setPlayerFavorites([]);
-      }
-      setSearchQuery("");
-      setSearchResults([]);
-    }
-  }, [activeMenuSlot, slots]);
+  const activeMenuPlayer = slots.find((s) => s.id === activeMenuSlot)?.player;
 
-  const fetchPlayers = async () => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/players`);
-      const data = await res.json();
-      setDbPlayers(data);
-    } catch (err) {
-      console.error("Error fetching players:", err);
-    }
-  };
+  // Depend on the player id, not the whole slots array — otherwise every
+  // life tick while the menu is open refires this fetch.
+  useEffect(() => {
+    if (activeMenuSlot === null) return;
+    if (activeMenuPlayer) fetchFavorites(activeMenuPlayer.id);
+    else setPlayerFavorites([]);
+    setSearchQuery("");
+    setSearchResults([]);
+  }, [activeMenuSlot, activeMenuPlayer?.id]);
 
   const fetchFavorites = async (playerId) => {
     try {
@@ -173,51 +241,15 @@ export default function App() {
     }
   };
 
-  const handleLogGame = async (playerId, playerName) => {
-    try {
-      await fetch(`${BACKEND_URL}/games`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          winner_id: playerId,
-          winner_name: playerName,
-          player_count: playerCount,
-          turns: turnCount,
-        }),
-      });
-    } catch (err) {
-      console.error("Error logging game:", err);
-    }
-  };
-
   const handleDeleteGameEntry = async (gameId) => {
     try {
       const res = await fetch(`${BACKEND_URL}/games/${gameId}`, {
         method: "DELETE",
       });
-      const data = await res.json();
-      setGameHistory((prev) => prev.filter((g) => g.id !== gameId));
-      if (data.winner_id) {
-        setDbPlayers((prev) =>
-          prev.map((p) =>
-            p.id === data.winner_id
-              ? { ...p, wins: Math.max(0, (p.wins || 0) - 1) }
-              : p,
-          ),
-        );
-        setSlots((prev) =>
-          prev.map((s) =>
-            s.player?.id === data.winner_id
-              ? {
-                  ...s,
-                  player: {
-                    ...s.player,
-                    wins: Math.max(0, (s.player.wins || 0) - 1),
-                  },
-                }
-              : s,
-          ),
-        );
+      if (res.ok) {
+        setGameHistory((prev) => prev.filter((g) => g.id !== gameId));
+        // Win totals are computed from games server-side; refetch to sync.
+        fetchPlayers();
       }
     } catch (err) {
       console.error("Error deleting game entry:", err);
@@ -250,8 +282,8 @@ export default function App() {
       });
       if (res.ok) {
         fetchPlayers();
-        setSlots(
-          slots.map((s) =>
+        setSlots((prev) =>
+          prev.map((s) =>
             s.player?.id === playerId
               ? { ...s, player: null, bgImage: "", commanderName: "" }
               : s,
@@ -273,8 +305,8 @@ export default function App() {
       });
       if (res.ok) {
         fetchPlayers();
-        setSlots(
-          slots.map((s) =>
+        setSlots((prev) =>
+          prev.map((s) =>
             s.player?.id === playerId
               ? { ...s, player: { ...s.player, name: renameValue.trim() } }
               : s,
@@ -329,8 +361,8 @@ export default function App() {
           scryfall_id: card.id,
         }),
       });
-      setSlots(
-        slots.map((s) =>
+      setSlots((prev) =>
+        prev.map((s) =>
           s.id === activeMenuSlot
             ? { ...s, bgImage: image_url, commanderName: card.name }
             : s,
@@ -342,15 +374,14 @@ export default function App() {
     }
   };
 
-  const handleSelectExistingFavorite = (imageUrl) => {
-    const fav = playerFavorites.find((f) => f.image_url === imageUrl);
-    setSlots(
-      slots.map((s) =>
+  const handleSelectExistingFavorite = (fav) => {
+    setSlots((prev) =>
+      prev.map((s) =>
         s.id === activeMenuSlot
           ? {
               ...s,
-              bgImage: imageUrl,
-              commanderName: fav?.commander_name || "Commander",
+              bgImage: resolveArt(fav.image_url),
+              commanderName: fav.commander_name || "Commander",
             }
           : s,
       ),
@@ -359,8 +390,8 @@ export default function App() {
   };
 
   const assignPlayerToSlot = (slotId, playerObj) => {
-    setSlots(
-      slots.map((s) =>
+    setSlots((prev) =>
+      prev.map((s) =>
         s.id === slotId ? { ...s, player: playerObj, bgImage: "" } : s,
       ),
     );
@@ -383,58 +414,60 @@ export default function App() {
   };
 
   const updateLife = (id, amount) => {
-    setSlots((prev) => {
-      const slot = prev.find((s) => s.id === id);
-      setLifeHistory((h) => ({
-        ...h,
-        [id]: [...(h[id] || []), slot.life],
-      }));
-      return prev.map((s) =>
-        s.id === id ? { ...s, life: s.life + amount } : s,
-      );
-    });
+    setSlots((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, life: s.life + amount } : s)),
+    );
   };
 
   const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
-    setSlots(
-      slots.map((s) => {
-        if (s.id === targetSlotId) {
-          const currentDamage = s.commanderDamage[opponentSlotId] || 0;
-          const newDamage = Math.max(0, currentDamage + amount);
-          const isNowLethal = newDamage >= 21;
-          return {
-            ...s,
-            life: s.life - amount,
-            commanderDamage: {
-              ...s.commanderDamage,
-              [opponentSlotId]: newDamage,
-            },
-            killedBySlotId: isNowLethal ? opponentSlotId : s.killedBySlotId,
-          };
-        }
-        return s;
+    // Compute the delta that will ACTUALLY apply after clamping at 0, so
+    // decrementing damage that's already 0 can't hand out free life.
+    const target = slots.find((s) => s.id === targetSlotId);
+    if (!target) return;
+    const current = target.commanderDamage[opponentSlotId] || 0;
+    const newDamage = Math.max(0, current + amount);
+    const applied = newDamage - current;
+    if (applied === 0) return;
+
+    setSlots((prev) =>
+      prev.map((s) => {
+        if (s.id !== targetSlotId) return s;
+        const newCmd = { ...s.commanderDamage, [opponentSlotId]: newDamage };
+        // Recompute the killer from scratch: set it when a source crosses 21,
+        // clear or reassign it if damage is ticked back below lethal.
+        const lethalEntry = Object.entries(newCmd).find(
+          ([oppId, dmg]) => Number(oppId) <= playerCount && dmg >= 21,
+        );
+        return {
+          ...s,
+          life: s.life - applied,
+          commanderDamage: newCmd,
+          killedBySlotId: lethalEntry ? Number(lethalEntry[0]) : null,
+        };
       }),
     );
-    showLifeDelta(targetSlotId, -amount);
+    showLifeDelta(targetSlotId, -applied);
   };
 
   const handleNewGameAndRoll = () => {
     setShowControlHub(false);
-    setSlots(
-      slots.map((s) => ({
+    setSlots((prev) =>
+      prev.map((s) => ({
         ...s,
-        life: 40,
+        life: startingLife,
         commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
         killedBySlotId: null,
       })),
     );
     setStartingPlayerId(null);
     setIsRolling(true);
-    setLifeHistory({});
     setLifeDeltas({});
-    setTurnCount(1);
+    setMonarchSlotId(null);
+    setInitiativeSlotId(null);
+    setAdjustingSlotId(null);
     autoWinTriggered.current = false;
     setWinner(null);
+    setWinConfirmed(false);
 
     let counter = 0;
     const maxTicks = 10;
@@ -455,61 +488,53 @@ export default function App() {
     }, 150);
   };
 
-  const handleRecordWin = async (playerId) => {
+  // Logging a game IS recording the win — win totals are computed from the
+  // games table server-side, so there's no separate counter to bump (and no
+  // way for the two to double-count or drift).
+  const confirmWin = async () => {
+    if (!winner?.player) return;
     try {
-      const res = await fetch(`${BACKEND_URL}/players/${playerId}/win`, {
+      const res = await fetch(`${BACKEND_URL}/games`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          winner_id: winner.player.id,
+          winner_name: winner.player.name,
+          player_count: playerCount,
+        }),
       });
       if (res.ok) {
-        const winnerSlot = slots.find((s) => s.player?.id === playerId)?.player;
-        await handleLogGame(playerId, winnerSlot?.name || "Unknown");
-        fetchPlayers();
-        fetchGameHistory();
-        setSlots(
-          slots.map((s) => {
-            if (s.player && s.player.id === playerId) {
-              return {
-                ...s,
-                player: { ...s.player, wins: (s.player.wins || 0) + 1 },
-              };
-            }
-            return s;
-          }),
-        );
-        setActiveMenuSlot(null);
+        await fetchGameHistory();
+        await fetchPlayers();
+        setWinConfirmed(true);
       }
     } catch (err) {
       console.error("Error recording match win:", err);
     }
   };
 
-  // Auto-win: placed after handleRecordWin so it can call it directly
+  // Opens the pending win screen for a slot — from the auto-detector or the
+  // manual "Record Match Win" button. Nothing is written until confirmed.
+  const openWinScreen = (slot) => {
+    autoWinTriggered.current = true;
+    setWinner(slot);
+    setWinConfirmed(false);
+    setActiveMenuSlot(null);
+  };
+
+  // Auto-win detection. Re-arms itself if players come back above 0 (e.g.
+  // after cancelling a pending win and fixing a mis-tap).
   useEffect(() => {
-    if (autoWinTriggered.current) return;
     const currentVisible = slots.slice(0, playerCount);
     const activePlayers = currentVisible.filter((s) => s.player);
     if (activePlayers.length < 2) return;
-    const alive = activePlayers.filter((s) => {
-      const lethalCmd = Object.values(s.commanderDamage).some(
-        (dmg) => dmg >= 21,
-      );
-      return s.life > 0 && !lethalCmd;
-    });
-    if (alive.length === 1) {
-      autoWinTriggered.current = true;
-      setWinner(alive[0]);
-      handleRecordWin(alive[0].player.id);
+    const alive = activePlayers.filter((s) => s.life > 0 && !isLethalCmd(s));
+    if (alive.length === 1 && !autoWinTriggered.current) {
+      openWinScreen(alive[0]);
+    } else if (alive.length > 1 && autoWinTriggered.current && !winner) {
+      autoWinTriggered.current = false;
     }
-  }, [slots, playerCount]);
-
-  const getActiveSlotPlayer = () =>
-    slots.find((s) => s.id === activeMenuSlot)?.player;
-
-  const getGridClasses = () => {
-    if (playerCount === 2) return "grid-cols-1 grid-rows-2";
-    if (playerCount === 5) return "grid-cols-2 grid-rows-3";
-    return "grid-cols-2 grid-rows-2";
-  };
+  }, [slots, playerCount, winner]);
 
   const getShortName = (slot) => {
     if (!slot) return "?";
@@ -531,33 +556,59 @@ export default function App() {
     return streak;
   };
 
-  const getCmdDamageGridOrder = (slot) => {
-    const allIds = Array.from({ length: playerCount }, (_, i) => i + 1);
-    const index = visibleSlots.indexOf(slot);
-    const isRotated = playerCount === 2 ? index === 0 : index < 2;
-    return isRotated ? [...allIds].reverse() : allIds;
+  // SQLite timestamps are "YYYY-MM-DD HH:MM:SS" — Safari refuses to parse
+  // that with a bare "Z" appended, so normalize to ISO-8601 first.
+  const formatGameDate = (playedAt) => {
+    if (!playedAt) return "";
+    const d = new Date(playedAt.replace(" ", "T") + "Z");
+    if (isNaN(d)) return playedAt;
+    return d.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
   };
+
+  const getGridClasses = () => {
+    if (playerCount === 2) return "grid-cols-1 grid-rows-2";
+    if (playerCount === 5) return "grid-cols-2 grid-rows-3";
+    return "grid-cols-2 grid-rows-2";
+  };
+
+  const lowHealthThreshold = Math.ceil(startingLife * 0.35);
+
+  // Stats derived from history + players
+  const podBreakdown = gameHistory.reduce((acc, g) => {
+    acc[g.player_count] = (acc[g.player_count] || 0) + 1;
+    return acc;
+  }, {});
+  const leaderboard = [...dbPlayers].sort(
+    (a, b) => (b.wins || 0) - (a.wins || 0),
+  );
+
+  const winnerLifetimeWins = winner?.player
+    ? (dbPlayers.find((p) => p.id === winner.player.id)?.wins ??
+      winner.player.wins ??
+      0)
+    : 0;
 
   return (
     <div
-      className={`h-screen w-screen grid bg-neutral-950 p-1 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 p-1 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {visibleSlots.map((slot, index) => {
-        const isRotated = playerCount === 2 ? index === 0 : index < 2;
+        const seat = layout.cells[index];
+        const isRotated = seat.rotated;
+        const isSpannedRow = seat.span === 2;
         const displayName = slot.player ? slot.player.name : slot.label;
         const isStartingPlayer = startingPlayerId === slot.id;
-        const isSpannedRow =
-          (playerCount === 3 && index === 2) ||
-          (playerCount === 5 && index === 4);
 
-        const lethalCommanderDamage = Object.values(slot.commanderDamage).some(
-          (dmg) => dmg >= 21,
-        );
+        const lethalCommanderDamage = isLethalCmd(slot);
         const isDefeated = slot.life <= 0 || lethalCommanderDamage;
+        const showDefeatOverlay = isDefeated && adjustingSlotId !== slot.id;
 
         const delta = lifeDeltas[slot.id];
-        const cmdOrder = getCmdDamageGridOrder(slot);
 
         return (
           <div
@@ -582,12 +633,12 @@ export default function App() {
             )}
 
             {/* Overshield overlay */}
-            {slot.life > 40 && (
+            {slot.life > startingLife && (
               <div className="absolute inset-0 z-[1] pointer-events-none bg-emerald-400 animate-overshield rounded-2xl" />
             )}
 
-            {/* Low health overlay */}
-            {slot.life <= 15 && slot.life > 0 && (
+            {/* Low health overlay (scales with starting life) */}
+            {slot.life <= lowHealthThreshold && slot.life > 0 && (
               <div className="absolute inset-0 z-[1] pointer-events-none bg-red-600 animate-heartbeat rounded-2xl" />
             )}
 
@@ -692,6 +743,16 @@ export default function App() {
                     {slot.player && getWinStreak(slot.player.id) >= 2 && (
                       <span className="text-sm">🔥</span>
                     )}
+                    {monarchSlotId === slot.id && (
+                      <span className="text-sm" title="Monarch">
+                        👑
+                      </span>
+                    )}
+                    {initiativeSlotId === slot.id && (
+                      <span className="text-sm" title="Initiative">
+                        ⚔️
+                      </span>
+                    )}
                   </span>
                 </div>
 
@@ -726,26 +787,32 @@ export default function App() {
                 )}
               </div>
 
+              {/* Commander damage mini-grid — boxes are placed at each
+                  opponent's actual seat position relative to this player */}
               <div className="w-full flex flex-col items-center gap-2 pointer-events-none">
                 <div className="pointer-events-auto">
                   <button
                     onPointerDown={(e) => {
                       e.stopPropagation();
-                      setActiveCmdModifier({
-                        targetSlotId: slot.id,
-                        opponentSlotId: null,
-                      });
+                      setActiveCmdSlotId(slot.id);
                     }}
-                    className="grid grid-cols-2 gap-1 bg-black/40 p-1 rounded-xl border border-neutral-800/60"
+                    className="grid gap-1 bg-black/40 p-1 rounded-xl border border-neutral-800/60"
+                    style={{
+                      gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
+                    }}
                   >
-                    {cmdOrder.map((oppId) => {
-                      const opp = slots.find((s) => s.id === oppId);
-                      if (!opp) return null;
+                    {visibleSlots.map((opp, oppIndex) => {
+                      const cell = getSeatCell(playerCount, oppIndex, index);
+                      const cellStyle = {
+                        gridRow: cell.row + 1,
+                        gridColumn: `${cell.col + 1} / span ${cell.span}`,
+                      };
                       if (opp.id === slot.id) {
                         return (
                           <div
                             key={`self-${opp.id}`}
-                            className="h-10 w-20 rounded-lg bg-neutral-950/20 border border-neutral-800/40 flex items-center justify-center"
+                            style={cellStyle}
+                            className="h-10 min-w-[5rem] rounded-lg bg-neutral-950/20 border border-neutral-800/40 flex items-center justify-center"
                           >
                             <span className="text-[10px] font-black text-neutral-600 uppercase tracking-widest">
                               ME
@@ -753,23 +820,21 @@ export default function App() {
                           </div>
                         );
                       }
-                      const isOpponentInGame = opp.id <= playerCount;
                       const amt = slot.commanderDamage[opp.id] || 0;
                       return (
                         <div
                           key={opp.id}
-                          className={`h-10 w-20 rounded-lg flex items-center justify-center border tabular-nums ${
-                            !isOpponentInGame
-                              ? "bg-neutral-950/40 border-neutral-900/30 opacity-20"
-                              : amt > 0
-                                ? "bg-red-950/60 border-red-700/50"
-                                : "bg-neutral-900/70 border-neutral-800"
+                          style={cellStyle}
+                          className={`h-10 min-w-[5rem] rounded-lg flex items-center justify-center border tabular-nums ${
+                            amt > 0
+                              ? "bg-red-950/60 border-red-700/50"
+                              : "bg-neutral-900/70 border-neutral-800"
                           }`}
                         >
                           <span
                             className={`text-xl font-black ${amt > 0 ? "text-red-400" : "text-neutral-600"}`}
                           >
-                            {isOpponentInGame ? amt : ""}
+                            {amt}
                           </span>
                         </div>
                       );
@@ -779,8 +844,11 @@ export default function App() {
               </div>
             </div>
 
-            {isDefeated && (
-              <div className="absolute inset-0 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 pointer-events-none select-none">
+            {/* Defeat overlay — blocks stray taps on a dead player, but the
+                header row stays clear and "Adjust Life" briefly re-enables
+                the controls so mis-taps can be corrected. */}
+            {showDefeatOverlay && (
+              <div className="absolute left-0 right-0 bottom-0 top-14 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 select-none">
                 <span className="text-5xl opacity-90">💀</span>
                 <span className="text-xs font-black uppercase tracking-widest text-red-500">
                   {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
@@ -795,6 +863,20 @@ export default function App() {
                     </span>
                   </span>
                 )}
+                <button
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    clearTimeout(adjustTimerRef.current);
+                    setAdjustingSlotId(slot.id);
+                    adjustTimerRef.current = setTimeout(
+                      () => setAdjustingSlotId(null),
+                      6000,
+                    );
+                  }}
+                  className="mt-2 text-[10px] font-bold uppercase tracking-wider text-neutral-300 bg-neutral-800/80 border border-neutral-700 px-3 py-1 rounded-full active:scale-95"
+                >
+                  Adjust Life
+                </button>
               </div>
             )}
           </div>
@@ -818,7 +900,7 @@ export default function App() {
           onPointerDown={() => setShowControlHub(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
@@ -857,26 +939,64 @@ export default function App() {
               </div>
             </div>
 
-            <button
-              onClick={() => {
-                fetchGameHistory();
-                setShowHistory(true);
-              }}
-              className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
-            >
-              <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
-              Game History
-            </button>
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
+                <Heart size={12} /> Starting Life{" "}
+                <span className="normal-case font-normal text-neutral-600">
+                  (applies on reset)
+                </span>
+              </label>
+              <div className="grid grid-cols-3 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+                {[20, 30, 40].map((num) => (
+                  <button
+                    key={num}
+                    onClick={() => setStartingLife(num)}
+                    className={`py-1.5 rounded-lg font-bold text-xs transition-all ${
+                      startingLife === num
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => {
+                  fetchGameHistory();
+                  setShowHistory(true);
+                }}
+                className="py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+              >
+                <Star size={16} className="text-yellow-500 fill-yellow-500" />
+                History
+              </button>
+              <button
+                onClick={() => {
+                  fetchGameHistory();
+                  fetchPlayers();
+                  setShowStats(true);
+                }}
+                className="py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+              >
+                <BarChart3 size={16} className="text-blue-400" />
+                Stats
+              </button>
+            </div>
 
             <button
               onClick={() => {
                 setShowControlHub(false);
                 setShowCoinFlip(true);
                 setCoinFlipResults([]);
+                setDiceResults(null);
               }}
               className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
             >
-              🪙 Coin Flip
+              🪙 Coin Flip & Dice
             </button>
 
             <button
@@ -913,7 +1033,44 @@ export default function App() {
               </button>
             </div>
 
-            {!getActiveSlotPlayer() ? (
+            {/* Table status designations for this seat */}
+            <div>
+              <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                Table Status
+              </h3>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() =>
+                    setMonarchSlotId((m) =>
+                      m === activeMenuSlot ? null : activeMenuSlot,
+                    )
+                  }
+                  className={`py-2 rounded-xl font-bold text-xs border transition-all active:scale-95 ${
+                    monarchSlotId === activeMenuSlot
+                      ? "bg-yellow-600/30 border-yellow-500/60 text-yellow-300"
+                      : "bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  👑 Monarch
+                </button>
+                <button
+                  onClick={() =>
+                    setInitiativeSlotId((m) =>
+                      m === activeMenuSlot ? null : activeMenuSlot,
+                    )
+                  }
+                  className={`py-2 rounded-xl font-bold text-xs border transition-all active:scale-95 ${
+                    initiativeSlotId === activeMenuSlot
+                      ? "bg-blue-600/30 border-blue-500/60 text-blue-300"
+                      : "bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  ⚔️ Initiative
+                </button>
+              </div>
+            </div>
+
+            {!activeMenuPlayer ? (
               <>
                 <div>
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
@@ -1022,7 +1179,7 @@ export default function App() {
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2 bg-neutral-950 p-3 border border-neutral-800 rounded-xl">
                   <div className="flex justify-between items-center border-b border-neutral-800/60 pb-2">
-                    {renamingPlayerId === getActiveSlotPlayer().id ? (
+                    {renamingPlayerId === activeMenuPlayer.id ? (
                       <div className="flex flex-1 gap-1 mr-2">
                         <input
                           autoFocus
@@ -1030,7 +1187,7 @@ export default function App() {
                           onChange={(e) => setRenameValue(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter")
-                              handleRenamePlayer(getActiveSlotPlayer().id);
+                              handleRenamePlayer(activeMenuPlayer.id);
                             if (e.key === "Escape") {
                               setRenamingPlayerId(null);
                               setRenameValue("");
@@ -1040,7 +1197,7 @@ export default function App() {
                         />
                         <button
                           onClick={() =>
-                            handleRenamePlayer(getActiveSlotPlayer().id)
+                            handleRenamePlayer(activeMenuPlayer.id)
                           }
                           className="text-xs bg-blue-600 text-white font-bold px-2 py-1 rounded-lg"
                         >
@@ -1059,12 +1216,12 @@ export default function App() {
                     ) : (
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-bold text-blue-400">
-                          {getActiveSlotPlayer().name}
+                          {activeMenuPlayer.name}
                         </span>
                         <button
                           onClick={() => {
-                            setRenamingPlayerId(getActiveSlotPlayer().id);
-                            setRenameValue(getActiveSlotPlayer().name);
+                            setRenamingPlayerId(activeMenuPlayer.id);
+                            setRenameValue(activeMenuPlayer.name);
                           }}
                           className="p-1 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-800"
                         >
@@ -1073,20 +1230,25 @@ export default function App() {
                       </div>
                     )}
                     <span className="text-xs text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
-                      🏆 {getActiveSlotPlayer().wins || 0} Wins
+                      🏆 {activeMenuPlayer.wins || 0} Wins
                     </span>
                   </div>
                   <div className="flex justify-between items-center pt-1">
                     <button
-                      onClick={() => handleRecordWin(getActiveSlotPlayer().id)}
+                      onClick={() => {
+                        const slot = slots.find(
+                          (s) => s.id === activeMenuSlot,
+                        );
+                        if (slot) openWinScreen(slot);
+                      }}
                       className="text-xs bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg shadow-md transition-all active:scale-95"
                     >
                       Record Match Win 🎉
                     </button>
                     <button
                       onClick={() =>
-                        setSlots(
-                          slots.map((s) =>
+                        setSlots((prev) =>
+                          prev.map((s) =>
                             s.id === activeMenuSlot
                               ? { ...s, player: null, bgImage: "" }
                               : s,
@@ -1117,13 +1279,11 @@ export default function App() {
                       playerFavorites.map((fav) => (
                         <button
                           key={fav.id}
-                          onClick={() =>
-                            handleSelectExistingFavorite(fav.image_url)
-                          }
+                          onClick={() => handleSelectExistingFavorite(fav)}
                           className="flex-shrink-0 relative group h-14 w-24 rounded-lg overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all"
                         >
                           <img
-                            src={fav.image_url}
+                            src={resolveArt(fav.image_url)}
                             alt={fav.commander_name}
                             className="h-full w-full object-cover brightness-70 group-hover:scale-105 transition-all"
                           />
@@ -1163,18 +1323,23 @@ export default function App() {
                           const savedFavorite = await res.json();
                           e.target.reset();
                           fetchFavorites(currentSlot.player.id);
-                          setSlots(
-                            slots.map((s) =>
+                          setSlots((prev) =>
+                            prev.map((s) =>
                               s.id === activeMenuSlot
                                 ? {
                                     ...s,
-                                    bgImage: savedFavorite.image_url,
+                                    bgImage: resolveArt(
+                                      savedFavorite.image_url,
+                                    ),
                                     commanderName: name,
                                   }
                                 : s,
                             ),
                           );
                           setActiveMenuSlot(null);
+                        } else {
+                          const errBody = await res.json().catch(() => ({}));
+                          alert(errBody.error || "Upload failed.");
                         }
                       } catch (err) {
                         console.error("Upload error:", err);
@@ -1309,11 +1474,7 @@ export default function App() {
                         🏆 {game.winner_name}
                       </span>
                       <span className="text-[11px] text-neutral-500">
-                        {game.player_count}P • T{game.turns} •{" "}
-                        {new Date(game.played_at + "Z").toLocaleDateString(
-                          "en-US",
-                          { month: "short", day: "numeric", year: "numeric" },
-                        )}
+                        {game.player_count}P • {formatGameDate(game.played_at)}
                       </span>
                     </div>
                     <button
@@ -1330,37 +1491,142 @@ export default function App() {
         </div>
       )}
 
-      {/* 6. COMMANDER DAMAGE POPUP */}
-      {activeCmdModifier &&
+      {/* 6. PLAYER STATS MODAL */}
+      {showStats && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onPointerDown={() => setShowStats(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl overflow-y-auto"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200 flex items-center gap-2">
+                <BarChart3 size={16} className="text-blue-400" /> Player Stats
+              </h2>
+              <button
+                onClick={() => setShowStats(false)}
+                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3">
+              <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+                Games Logged
+              </span>
+              <span className="text-2xl font-black text-white tabular-nums">
+                {gameHistory.length}
+              </span>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                Leaderboard
+              </h3>
+              <div className="flex flex-col gap-1.5">
+                {leaderboard.length === 0 ? (
+                  <p className="text-xs text-neutral-500 italic py-2">
+                    No profiles yet.
+                  </p>
+                ) : (
+                  leaderboard.map((p, i) => {
+                    const streak = getWinStreak(p.id);
+                    return (
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-black text-neutral-600 w-5">
+                            #{i + 1}
+                          </span>
+                          <span className="text-sm font-bold text-neutral-200">
+                            {p.name}
+                          </span>
+                          {streak >= 2 && (
+                            <span className="text-[10px] font-bold text-orange-400">
+                              🔥 {streak}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-amber-400 font-bold tabular-nums">
+                          🏆 {p.wins || 0}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {Object.keys(podBreakdown).length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                  Games by Pod Size
+                </h3>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[2, 3, 4, 5].map((n) => (
+                    <div
+                      key={n}
+                      className="flex flex-col items-center bg-neutral-950 border border-neutral-800 rounded-xl py-2"
+                    >
+                      <span className="text-[10px] font-bold text-neutral-500 uppercase">
+                        {n}P
+                      </span>
+                      <span className="text-lg font-black text-white tabular-nums">
+                        {podBreakdown[n] || 0}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 7. COMMANDER DAMAGE POPUP — boxes are laid out to mirror the table
+          from the viewing player's seat, for every pod size. */}
+      {activeCmdSlotId !== null &&
         (() => {
-          const targetSlot = slots.find(
-            (s) => s.id === activeCmdModifier.targetSlotId,
+          const viewerIndex = visibleSlots.findIndex(
+            (s) => s.id === activeCmdSlotId,
           );
+          const targetSlot = visibleSlots[viewerIndex];
           if (!targetSlot) return null;
-          const allIds = Array.from({ length: playerCount }, (_, i) => i + 1);
-          const cmdOrder = targetSlot.id <= 2 ? [...allIds].reverse() : allIds;
+          const viewerRotated = layout.cells[viewerIndex]?.rotated;
           return (
             <div
               className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center"
               onPointerDown={(e) => {
                 e.stopPropagation();
-                setActiveCmdModifier(null);
+                setActiveCmdSlotId(null);
                 setEditingCmdSlot(null);
               }}
             >
               <div
-                className={`grid grid-cols-2 gap-3 p-4 w-[90vw] max-w-sm ${targetSlot.id <= 2 ? "rotate-180" : ""}`}
+                className={`grid gap-3 p-4 w-[90vw] max-w-sm ${viewerRotated ? "rotate-180" : ""}`}
+                style={{
+                  gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
+                }}
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                {cmdOrder.map((oppId) => {
-                  const opp = slots.find((s) => s.id === oppId);
-                  if (!opp) return null;
+                {visibleSlots.map((opp, oppIndex) => {
+                  const cell = getSeatCell(playerCount, oppIndex, viewerIndex);
+                  const cellStyle = {
+                    gridRow: cell.row + 1,
+                    gridColumn: `${cell.col + 1} / span ${cell.span}`,
+                  };
 
                   if (opp.id === targetSlot.id) {
                     return (
                       <div
                         key={`self-${opp.id}`}
-                        className="h-32 rounded-2xl bg-neutral-950/60 border-2 border-neutral-800 flex items-center justify-center"
+                        style={cellStyle}
+                        className="h-28 rounded-2xl bg-neutral-950/60 border-2 border-neutral-800 flex items-center justify-center"
                       >
                         <span className="text-lg font-black text-neutral-600 uppercase tracking-widest">
                           ME
@@ -1369,22 +1635,13 @@ export default function App() {
                     );
                   }
 
-                  const isOpponentInGame = opp.id <= playerCount;
                   const amt = targetSlot.commanderDamage[opp.id] || 0;
-
-                  if (!isOpponentInGame) {
-                    return (
-                      <div
-                        key={opp.id}
-                        className="h-32 rounded-2xl bg-neutral-950/40 border-2 border-neutral-900/30 opacity-20"
-                      />
-                    );
-                  }
 
                   return (
                     <div
                       key={opp.id}
-                      className={`h-32 rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${amt > 0 ? "border-red-700/50" : "border-neutral-700"}`}
+                      style={cellStyle}
+                      className={`h-28 rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${amt > 0 ? "border-red-700/50" : "border-neutral-700"}`}
                     >
                       {opp.bgImage ? (
                         <div
@@ -1475,19 +1732,19 @@ export default function App() {
           );
         })()}
 
-      {/* 7. COIN FLIP MODAL */}
+      {/* 8. COIN FLIP & DICE MODAL */}
       {showCoinFlip && (
         <div
           className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
           onPointerDown={() => setShowCoinFlip(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
               <h2 className="text-lg font-bold text-neutral-200">
-                🪙 Coin Flip
+                🪙 Coin Flip & Dice
               </h2>
               <button
                 onClick={() => setShowCoinFlip(false)}
@@ -1499,7 +1756,7 @@ export default function App() {
 
             <div>
               <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5">
-                Number of Flips
+                Count (coins or dice)
               </label>
               <div className="flex items-center gap-3 justify-center">
                 <button
@@ -1524,6 +1781,7 @@ export default function App() {
               onClick={() => {
                 setIsFlipping(true);
                 setCoinFlipResults([]);
+                setDiceResults(null);
                 setTimeout(() => {
                   const results = Array.from({ length: coinFlipCount }, () =>
                     Math.random() < 0.5 ? "heads" : "tails",
@@ -1532,13 +1790,44 @@ export default function App() {
                   setIsFlipping(false);
                 }, 600);
               }}
-              disabled={isFlipping}
+              disabled={isFlipping || isRollingDice}
               className="w-full py-3 bg-yellow-600 hover:bg-yellow-500 disabled:bg-neutral-800 text-white font-black rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
             >
               {isFlipping
                 ? "Flipping..."
                 : `Flip ${coinFlipCount === 1 ? "1 Coin" : `${coinFlipCount} Coins`}`}
             </button>
+
+            <div className="grid grid-cols-2 gap-2">
+              {[6, 20].map((sides) => (
+                <button
+                  key={sides}
+                  onClick={() => {
+                    setIsRollingDice(true);
+                    setCoinFlipResults([]);
+                    setDiceResults(null);
+                    setTimeout(() => {
+                      const values = Array.from(
+                        { length: coinFlipCount },
+                        () => 1 + Math.floor(Math.random() * sides),
+                      );
+                      setDiceResults({ sides, values });
+                      setIsRollingDice(false);
+                    }, 600);
+                  }}
+                  disabled={isFlipping || isRollingDice}
+                  className="py-3 bg-indigo-700 hover:bg-indigo-600 disabled:bg-neutral-800 text-white font-black rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+                >
+                  🎲 Roll d{sides}
+                </button>
+              ))}
+            </div>
+
+            {isRollingDice && (
+              <p className="text-center text-xs text-neutral-500 animate-pulse">
+                Rolling...
+              </p>
+            )}
 
             {coinFlipResults.length > 0 && !isFlipping && (
               <div className="flex flex-col gap-2">
@@ -1567,11 +1856,37 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {diceResults && !isRollingDice && (
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between text-xs font-bold px-1">
+                  <span className="text-indigo-300">
+                    d{diceResults.sides} × {diceResults.values.length}
+                  </span>
+                  {diceResults.values.length > 1 && (
+                    <span className="text-neutral-400">
+                      Total: {diceResults.values.reduce((a, b) => a + b, 0)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {diceResults.values.map((v, i) => (
+                    <div
+                      key={i}
+                      className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black tabular-nums border-2 bg-indigo-500/20 border-indigo-500/50 text-white"
+                    >
+                      {v}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* 8. WIN SCREEN */}
+      {/* 9. WIN SCREEN — pending until confirmed, so nothing hits the
+          database on an accidental tap. */}
       {winner && (
         <div className="absolute inset-0 z-[60] flex items-center justify-center">
           {winner.bgImage && (
@@ -1589,7 +1904,7 @@ export default function App() {
             <div className="text-6xl animate-bounce">👑</div>
             <div className="flex flex-col items-center gap-1">
               <span className="text-xs font-black uppercase tracking-[0.3em] text-yellow-400/80">
-                Winner
+                {winConfirmed ? "Winner" : "Victory?"}
               </span>
               <span className="text-5xl font-black text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.9)]">
                 {winner.player.name}
@@ -1600,18 +1915,56 @@ export default function App() {
                 </span>
               )}
             </div>
-            <span className="text-sm text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full">
-              🏆 {(winner.player.wins || 0) + 1} lifetime wins
-            </span>
-            <button
-              onClick={() => {
-                setShowControlHub(true);
-                setWinner(null);
-              }}
-              className="mt-2 px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
-            >
-              Reset & Roll Next Game
-            </button>
+
+            {winConfirmed ? (
+              <>
+                <span className="text-sm text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full">
+                  🏆 {winnerLifetimeWins} lifetime wins
+                </span>
+                <div className="flex flex-col gap-2 items-center">
+                  <button
+                    onClick={() => {
+                      setShowControlHub(true);
+                      setWinner(null);
+                      setWinConfirmed(false);
+                    }}
+                    className="mt-2 px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
+                  >
+                    Reset & Roll Next Game
+                  </button>
+                  <button
+                    onClick={() => {
+                      setWinner(null);
+                      setWinConfirmed(false);
+                    }}
+                    className="text-xs text-neutral-400 underline hover:text-white transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col gap-2 items-center">
+                <button
+                  onClick={confirmWin}
+                  className="px-8 py-3 bg-amber-600 hover:bg-amber-500 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
+                >
+                  Confirm Win 🏆
+                </button>
+                <button
+                  onClick={() => {
+                    // Cancel without recording anything. autoWinTriggered
+                    // stays set and re-arms once more than one player is
+                    // back above 0 (see the auto-win effect).
+                    setWinner(null);
+                    setWinConfirmed(false);
+                  }}
+                  className="text-xs text-neutral-400 underline hover:text-white transition-colors"
+                >
+                  Cancel — nothing recorded
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
