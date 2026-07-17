@@ -156,6 +156,9 @@ export default function App() {
 
   const visibleSlots = slots.slice(0, playerCount);
   const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
+  // 5P squeezes tiles to a third of the screen height, so scale the life
+  // number and commander mini-grid with the viewport instead of fixed sizes.
+  const isCompact = playerCount === 5;
 
   // Lethal commander damage — only counts opponents actually in the current
   // pod, so shrinking the pod size mid-game can't kill someone with damage
@@ -729,17 +732,21 @@ export default function App() {
               </div>
             </div>
 
-            <div className="relative z-10 flex flex-col items-center justify-between h-full w-full p-3 pointer-events-none">
+            <div
+              className={`relative z-10 flex flex-col items-center justify-between h-full w-full pointer-events-none ${isCompact ? "p-1.5" : "p-3"}`}
+            >
               <div className="flex justify-between w-full items-start pointer-events-none gap-2">
                 <div className="flex flex-col gap-1 items-start pointer-events-none">
                   <span
-                    className={`font-bold text-sm tracking-wide flex items-center gap-1 bg-black/50 px-3 py-1 rounded-full border ${
+                    className={`font-bold tracking-wide flex items-center gap-1 bg-black/50 rounded-full border ${
+                      isCompact ? "text-[11px] px-2 py-0.5" : "text-sm px-3 py-1"
+                    } ${
                       isStartingPlayer
                         ? "border-yellow-500/50 text-yellow-400"
                         : "border-neutral-700/30 text-neutral-200"
                     }`}
                   >
-                    <User size={13} /> {displayName}
+                    <User size={isCompact ? 11 : 13} /> {displayName}
                     {slot.player && getWinStreak(slot.player.id) >= 2 && (
                       <span className="text-sm">🔥</span>
                     )}
@@ -761,18 +768,25 @@ export default function App() {
                     e.stopPropagation();
                     setActiveMenuSlot(slot.id);
                   }}
-                  className={`p-3 bg-black/50 border rounded-full transition-all flex-shrink-0 pointer-events-auto ${
+                  className={`bg-black/50 border rounded-full transition-all flex-shrink-0 pointer-events-auto ${isCompact ? "p-2" : "p-3"} ${
                     isStartingPlayer
                       ? "border-yellow-500/30 text-yellow-500/70"
                       : "border-neutral-700/30 text-neutral-400"
                   }`}
                 >
-                  <Settings size={20} />
+                  <Settings size={isCompact ? 16 : 20} />
                 </button>
               </div>
 
               <div className="flex flex-col items-center justify-center my-auto relative">
-                <span className="text-7xl sm:text-8xl md:text-9xl font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums">
+                <span
+                  className="font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums text-7xl sm:text-8xl md:text-9xl"
+                  style={
+                    isCompact
+                      ? { fontSize: "clamp(2rem, 11vh, 6rem)", lineHeight: 1 }
+                      : undefined
+                  }
+                >
                   {slot.life}
                 </span>
                 {delta && (
@@ -796,7 +810,7 @@ export default function App() {
                       e.stopPropagation();
                       setActiveCmdSlotId(slot.id);
                     }}
-                    className="grid gap-1 bg-black/40 p-1 rounded-xl border border-neutral-800/60"
+                    className={`grid bg-black/40 rounded-xl border border-neutral-800/60 ${isCompact ? "gap-0.5 p-0.5" : "gap-1 p-1"}`}
                     style={{
                       gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
                     }}
@@ -811,10 +825,17 @@ export default function App() {
                         return (
                           <div
                             key={`self-${opp.id}`}
-                            style={cellStyle}
-                            className="h-10 min-w-[5rem] rounded-lg bg-neutral-950/20 border border-neutral-800/40 flex items-center justify-center"
+                            style={{
+                              ...cellStyle,
+                              ...(isCompact
+                                ? { height: "clamp(14px, 4.5vh, 40px)" }
+                                : {}),
+                            }}
+                            className={`rounded-lg bg-neutral-950/20 border border-neutral-800/40 flex items-center justify-center ${isCompact ? "min-w-[3rem]" : "h-10 min-w-[5rem]"}`}
                           >
-                            <span className="text-[10px] font-black text-neutral-600 uppercase tracking-widest">
+                            <span
+                              className={`font-black text-neutral-600 uppercase tracking-widest ${isCompact ? "text-[8px]" : "text-[10px]"}`}
+                            >
                               ME
                             </span>
                           </div>
@@ -824,15 +845,20 @@ export default function App() {
                       return (
                         <div
                           key={opp.id}
-                          style={cellStyle}
-                          className={`h-10 min-w-[5rem] rounded-lg flex items-center justify-center border tabular-nums ${
+                          style={{
+                            ...cellStyle,
+                            ...(isCompact
+                              ? { height: "clamp(14px, 4.5vh, 40px)" }
+                              : {}),
+                          }}
+                          className={`rounded-lg flex items-center justify-center border tabular-nums ${isCompact ? "min-w-[3rem]" : "h-10 min-w-[5rem]"} ${
                             amt > 0
                               ? "bg-red-950/60 border-red-700/50"
                               : "bg-neutral-900/70 border-neutral-800"
                           }`}
                         >
                           <span
-                            className={`text-xl font-black ${amt > 0 ? "text-red-400" : "text-neutral-600"}`}
+                            className={`font-black ${isCompact ? "text-sm" : "text-xl"} ${amt > 0 ? "text-red-400" : "text-neutral-600"}`}
                           >
                             {amt}
                           </span>
@@ -848,8 +874,10 @@ export default function App() {
                 header row stays clear and "Adjust Life" briefly re-enables
                 the controls so mis-taps can be corrected. */}
             {showDefeatOverlay && (
-              <div className="absolute left-0 right-0 bottom-0 top-14 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 select-none">
-                <span className="text-5xl opacity-90">💀</span>
+              <div
+                className={`absolute left-0 right-0 bottom-0 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 select-none ${isCompact ? "top-9" : "top-14"}`}
+              >
+                <span className={isCompact ? "text-2xl opacity-90" : "text-5xl opacity-90"}>💀</span>
                 <span className="text-xs font-black uppercase tracking-widest text-red-500">
                   {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
                 </span>
@@ -1625,8 +1653,11 @@ export default function App() {
                     return (
                       <div
                         key={`self-${opp.id}`}
-                        style={cellStyle}
-                        className="h-28 rounded-2xl bg-neutral-950/60 border-2 border-neutral-800 flex items-center justify-center"
+                        style={{
+                          ...cellStyle,
+                          height: "clamp(56px, 24vh, 7rem)",
+                        }}
+                        className="rounded-2xl bg-neutral-950/60 border-2 border-neutral-800 flex items-center justify-center"
                       >
                         <span className="text-lg font-black text-neutral-600 uppercase tracking-widest">
                           ME
@@ -1640,8 +1671,11 @@ export default function App() {
                   return (
                     <div
                       key={opp.id}
-                      style={cellStyle}
-                      className={`h-28 rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${amt > 0 ? "border-red-700/50" : "border-neutral-700"}`}
+                      style={{
+                        ...cellStyle,
+                        height: "clamp(56px, 24vh, 7rem)",
+                      }}
+                      className={`rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${amt > 0 ? "border-red-700/50" : "border-neutral-700"}`}
                     >
                       {opp.bgImage ? (
                         <div
