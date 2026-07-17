@@ -594,7 +594,16 @@ export default function App() {
 
   return (
     <div
-      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 p-1 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
+      style={{
+        // Pad by the device's safe areas (notch / home indicator) so nothing
+        // is clipped in landscape, while still drawing edge-to-edge.
+        // Falls back to the original 0.25rem on devices with no insets.
+        paddingTop: "max(0.25rem, env(safe-area-inset-top))",
+        paddingRight: "max(0.25rem, env(safe-area-inset-right))",
+        paddingBottom: "max(0.25rem, env(safe-area-inset-bottom))",
+        paddingLeft: "max(0.25rem, env(safe-area-inset-left))",
+      }}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {visibleSlots.map((slot, index) => {
