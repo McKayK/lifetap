@@ -174,6 +174,10 @@ export default function App() {
   // Temporarily allow life adjustments on a defeated slot
   const [adjustingSlotId, setAdjustingSlotId] = useState(null);
   const adjustTimerRef = useRef(null);
+  // TEMPORARY — lets the ?debug=1 overlay report the root container's ACTUAL
+  // computed padding and height, not just what env() claims. Safe to delete
+  // with the rest of the debug overlay.
+  const rootRef = useRef(null);
 
   // Coin flip + dice state
   const [showCoinFlip, setShowCoinFlip] = useState(false);
@@ -222,6 +226,8 @@ export default function App() {
     if (!showDebugOverlay || typeof window === "undefined") return;
     const readDebugInfo = () => {
       const cs = getComputedStyle(document.documentElement);
+      const el = rootRef.current;
+      const es = el ? getComputedStyle(el) : null;
       setDebugInfo({
         orientation: window.innerWidth >= window.innerHeight ? "landscape" : "portrait",
         innerW: window.innerWidth,
@@ -236,6 +242,13 @@ export default function App() {
         sar: cs.getPropertyValue("--debug-sar").trim(),
         sab: cs.getPropertyValue("--debug-sab").trim(),
         sal: cs.getPropertyValue("--debug-sal").trim(),
+        padT: es ? es.paddingTop : "?",
+        padR: es ? es.paddingRight : "?",
+        padB: es ? es.paddingBottom : "?",
+        padL: es ? es.paddingLeft : "?",
+        boxH: el ? el.offsetHeight : "?",
+        contentH: el ? el.clientHeight : "?",
+        scrollH: el ? el.scrollHeight : "?",
       });
     };
     readDebugInfo();
@@ -802,6 +815,7 @@ export default function App() {
 
   return (
     <div
+      ref={rootRef}
       className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
@@ -2410,7 +2424,11 @@ screen: ${debugInfo.screenW} x ${debugInfo.screenH}
 visualViewport: ${debugInfo.vvW} x ${debugInfo.vvH}
 dpr: ${debugInfo.dpr}  standalone: ${String(debugInfo.standalone)}
 safe-area top/right/bottom/left:
-  ${debugInfo.sat} / ${debugInfo.sar} / ${debugInfo.sab} / ${debugInfo.sal}`}
+  ${debugInfo.sat} / ${debugInfo.sar} / ${debugInfo.sab} / ${debugInfo.sal}
+root padding T/R/B/L:
+  ${debugInfo.padT} / ${debugInfo.padR} / ${debugInfo.padB} / ${debugInfo.padL}
+root box/content/scroll H:
+  ${debugInfo.boxH} / ${debugInfo.contentH} / ${debugInfo.scrollH}`}
         </div>
       )}
     </div>
