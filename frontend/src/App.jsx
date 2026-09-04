@@ -761,7 +761,7 @@ export default function App() {
 
   return (
     <div
-      className={`fixed inset-0 grid bg-neutral-950 app-safe-area gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
+      className={`fixed inset-0 grid bg-neutral-950 p-1 gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
@@ -1232,7 +1232,7 @@ export default function App() {
           onPointerDown={() => setShowControlHub(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-lg rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-lg rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar overscroll-contain"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
@@ -1350,7 +1350,7 @@ export default function App() {
           onPointerDown={() => setActiveMenuSlot(null)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-2xl rounded-2xl p-6 flex flex-col gap-5 max-h-[94vh] overflow-y-auto no-scrollbar shadow-2xl"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-2xl rounded-2xl p-6 flex flex-col gap-5 max-h-[94vh] overflow-y-auto no-scrollbar overscroll-contain shadow-2xl"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
@@ -1428,7 +1428,7 @@ export default function App() {
                       (most played first)
                     </span>
                   </h3>
-                  <div className="flex flex-col gap-2 max-h-[50vh] overflow-y-auto no-scrollbar border border-neutral-800 bg-neutral-950/40 p-2 rounded-xl">
+                  <div className="flex flex-col gap-2 max-h-[50vh] overflow-y-auto no-scrollbar overscroll-contain border border-neutral-800 bg-neutral-950/40 p-2 rounded-xl">
                     {dbPlayers.length === 0 ? (
                       <p className="text-sm text-neutral-500 text-center py-4">
                         No profiles found.
@@ -1638,7 +1638,7 @@ export default function App() {
                       No favorited commanders yet.
                     </p>
                   ) : (
-                    <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto no-scrollbar pr-0.5">
+                    <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
                       {playerFavorites.map((fav) => {
                         const isArmed = armedDeleteFavId === fav.id;
                         return (
@@ -1787,7 +1787,7 @@ export default function App() {
                           <X size={16} />
                         </button>
                       </div>
-                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar pr-0.5">
+                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
                         {printingsOptions.map((print) => {
                           const img =
                             print.image_uris?.art_crop ||
@@ -1817,7 +1817,7 @@ export default function App() {
                     </div>
                   ) : (
                     (searchResults.length > 0 || isLoadingPrintings) && (
-                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar pr-0.5">
+                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
                         {searchResults.map((card) => {
                           const img =
                             card.image_uris?.art_crop ||
@@ -1984,7 +1984,7 @@ export default function App() {
                 <X size={16} />
               </button>
             </div>
-            <div className="flex flex-col gap-2 overflow-y-auto no-scrollbar">
+            <div className="flex flex-col gap-2 overflow-y-auto no-scrollbar overscroll-contain">
               {gameHistory.length === 0 ? (
                 <p className="text-sm text-neutral-500 text-center py-8 italic">
                   No games recorded yet.
@@ -2024,7 +2024,7 @@ export default function App() {
           onPointerDown={() => setShowStats(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl overflow-y-auto no-scrollbar"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl overflow-y-auto no-scrollbar overscroll-contain"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
@@ -2121,7 +2121,7 @@ export default function App() {
           onPointerDown={() => setShowCoinFlip(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar overscroll-contain"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
@@ -2222,7 +2222,7 @@ export default function App() {
                     Tails: {coinFlipResults.filter((r) => r === "tails").length}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar">
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar overscroll-contain">
                   {coinFlipResults.map((result, i) => (
                     <div
                       key={i}
@@ -2251,7 +2251,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar">
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar overscroll-contain">
                   {diceResults.values.map((v, i) => (
                     <div
                       key={i}
