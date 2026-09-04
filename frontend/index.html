@@ -3,35 +3,41 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- No viewport-fit=cover. Together with black-translucent below, it was
+         added in f6de134 ("fixed landscape iphone bug") and is what asks iOS
+         for a full-bleed viewport. The older pre-notch iPad mishandles that
+         request: it subtracts the 20px status bar from the web view's HEIGHT
+         but still positions the view at y=0, so 20px of screen at the BOTTOM
+         ends up outside the web view entirely — an unpaintable black strip
+         that no CSS can reach (window.innerHeight is 1004 while screen is
+         1024). Leaving viewport-fit off keeps the classic behavior. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
     <meta name="HandheldFriendly" content="true" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <!-- "black-fullscreen" isn't a real value for this tag (only
-         default/black/black-translucent are) — iOS falls back to its
-         opaque default status bar for unrecognized values, which is what
-         was pushing the whole app down (and off-screen in landscape,
-         where the reserved area is proportionally bigger) when launched
-         from the home screen. black-translucent + viewport-fit=cover lets
-         the app draw truly full-bleed under the notch/status bar/home
-         indicator instead of the OS reserving space for them. -->
+    <!-- "black-fullscreen" is deliberately NOT a valid value (the real ones
+         are default / black / black-translucent). iOS ignores it, and being
+         ignored is the point: the manifest's "display": "fullscreen" below
+         hides the status bar completely, so there is no status bar for this
+         tag to style and nothing for the OS to reserve space for. This exact
+         pairing shipped from April through Sept 4 with no bottom bar on the
+         iPad. Do not "correct" this to black-translucent — that is what
+         reintroduces the strip described above. "default" would be the
+         honest spelling of the same no-op if you ever want to tidy it. -->
     <meta
       name="apple-mobile-web-app-status-bar-style"
-      content="black-translucent"
+      content="black-fullscreen"
     />
     <meta name="theme-color" content="#0a0a0a" />
-    <!-- No <link rel="manifest"> here on purpose. debug.html (which has no
-         manifest at all) proved out clean on the iPad — no reserved bottom
-         space, real numbers match exactly — while every icon saved from
-         this page WITH a manifest link kept leaving a bottom bar no matter
-         what "display" value the manifest used. That points at iOS's
-         manifest-driven "Add to Home Screen" install path itself having a
-         bug on this iPadOS version, so we just don't use it: dropping the
-         manifest link falls back to the plain apple-mobile-web-app-* meta
-         tags above, the same well-established path debug.html used. -->
+    <!-- Required. Without this link iOS falls back to the plain meta-tag
+         install path, which has no concept of display:fullscreen — so the
+         status bar comes back and takes its 20px with it. The manifest was
+         never the cause of the bottom bar; it sat unchanged at
+         display:fullscreen through every failing build. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>MTG Lifetap Clone</title>

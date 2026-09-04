@@ -6,7 +6,17 @@ backend/node_modules/
 # Ignore production builds local testing
 frontend/dist/
 
-# Ignore the local SQLite database file
+# Ignore the local SQLite database file (laptop dev copy)
 backend/data/
+
+# Ignore the production data + custom-art folders (top-level — this is what
+# docker-compose.yml actually bind-mounts into the backend container on the
+# server: ./data:/app/data and ./custom-art:/app/public/custom-art). These
+# were NOT ignored before, so if either ever got committed, every future
+# `git pull` on the server would silently overwrite the live database/art
+# with whatever stale copy was committed — this is almost certainly what
+# just happened.
+/data/
+/custom-art/
 
 .claude

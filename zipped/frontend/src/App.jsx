@@ -12,6 +12,7 @@ import {
   Users,
   BarChart3,
   Heart,
+  UserMinus,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,17 @@ const TABLE_LAYOUTS = {
 // CSS rotation flips them back, every box lands in the same direction as the
 // actual person at the table. Reversing a flat ID list (the old approach)
 // only works for a full rectangle — this works for 3P and 5P layouts too.
+// Arcade neon colors for the "GG" death screen — a fresh one is picked at
+// random for each elimination (see the deathColors effect below).
+const NEON_PALETTE = [
+  { glow1: "#ff2fd6", glow2: "#2fe8ff" }, // magenta / cyan
+  { glow1: "#39ff14", glow2: "#ff2fd6" }, // green / magenta
+  { glow1: "#00e5ff", glow2: "#ffea00" }, // cyan / yellow
+  { glow1: "#ff9500", glow2: "#ff2fd6" }, // orange / magenta
+  { glow1: "#c644fc", glow2: "#39ff14" }, // purple / green
+  { glow1: "#ffea00", glow2: "#00e5ff" }, // yellow / cyan
+];
+
 const getSeatCell = (playerCount, seatIndex, viewerIndex) => {
   const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
   const cell = layout.cells[seatIndex];
@@ -111,10 +123,46 @@ export default function App() {
   const pointerDownOnTapTarget = useRef({});
 
   const [lifeDeltas, setLifeDeltas] = useState({});
+  // Pending "clear this delta popup" timers, keyed by slot id — kept in a
+  // ref (not state) so scheduling/clearing them is a plain side effect
+  // instead of living inside the setLifeDeltas updater. Doing it inside the
+  // updater used to work in production but silently leaked an orphaned
+  // timer per tap in dev: React 18 Strict Mode intentionally calls state
+  // updater functions twice to catch exactly this kind of impurity (a
+  // function that schedules real timers as a side effect isn't safe to
+  // call twice), and the throwaway second call still scheduled a real
+  // setTimeout with no reference kept to cancel it — so ~5s after your
+  // *first* tap in a streak, that leaked timer would fire and wipe the
+  // popup regardless of how many times you'd tapped since, making it look
+  // like the count "restarted" mid-streak. Production builds don't run
+  // Strict Mode's double-invoke, which is why it only showed up in dev.
+  const lifeDeltaTimers = useRef({});
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [playerFavorites, setPlayerFavorites] = useState([]);
+  // When a search result has more than one printing, this holds the list of
+  // printings (each its own art) so the player can pick a specific one
+  // instead of always getting whichever printing Scryfall returns first.
+  const [printingsOptions, setPrintingsOptions] = useState(null);
+  const [printingsForName, setPrintingsForName] = useState("");
+  const [isLoadingPrintings, setIsLoadingPrintings] = useState(false);
+  // Which half of the drawer is showing for an assigned player — browsing
+  // existing favorites, or adding new art. Keeping these on separate tabs
+  // instead of one long stacked column is the fix for "scatterbrained".
+  const [drawerTab, setDrawerTab] = useState("favorites");
+  // Long-press-to-delete on favorite cards: which favorite (by id) is
+  // currently "armed" and showing its delete overlay. A plain tap selects
+  // the commander; holding for ~500ms arms delete mode instead, and a
+  // second, separate tap on the armed card confirms the delete — mirroring
+  // the long-press pattern used elsewhere in the app (life ±5, commander
+  // damage) instead of a native confirm() dialog.
+  const [armedDeleteFavId, setArmedDeleteFavId] = useState(null);
+  const favJustArmed = useRef(false);
+  // "Add New" tab defaults to the simple, primary flow — Scryfall art
+  // search — with custom-art upload tucked behind this toggle so it isn't
+  // another always-visible form competing for attention.
+  const [showCustomUpload, setShowCustomUpload] = useState(false);
   const [showControlHub, setShowControlHub] = useState(false);
   const [startingPlayerId, setStartingPlayerId] = useState(null);
   const [isRolling, setIsRolling] = useState(false);
@@ -141,6 +189,64 @@ export default function App() {
   const [winConfirmed, setWinConfirmed] = useState(false);
   const autoWinTriggered = useRef(false);
 
+  // A "short" viewport (landscape phone, mainly) doesn't have enough
+  // vertical room for the normal fixed-size tile content — same problem
+  // the 5-player pod already solves with clamp()-based compact sizing.
+  // Tracking this lets every pod size borrow that compact styling instead
+  // of only ever engaging it for playerCount === 5.
+  const [isShortViewport, setIsShortViewport] = useState(
+    () => typeof window !== "undefined" && window.innerHeight <= 500,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-height: 500px)");
+    const handleChange = (e) => setIsShortViewport(e.matches);
+    setIsShortViewport(mq.matches);
+    mq.addEventListener("change", handleChange);
+    return () => mq.removeEventListener("change", handleChange);
+  }, []);
+
+  // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
+  // (or load it via /debug.html, which injects this same app without ever
+  // changing the address bar, so it survives Add to Home Screen) to see
+  // real viewport/safe-area numbers on screen. Safe to delete once the
+  // iPad standalone-mode layout issue is resolved.
+  const [showDebugOverlay] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      (new URLSearchParams(window.location.search).get("debug") === "1" ||
+        window.location.pathname.endsWith("/debug.html")),
+  );
+  const [debugInfo, setDebugInfo] = useState(null);
+  useEffect(() => {
+    if (!showDebugOverlay || typeof window === "undefined") return;
+    const readDebugInfo = () => {
+      const cs = getComputedStyle(document.documentElement);
+      setDebugInfo({
+        orientation: window.innerWidth >= window.innerHeight ? "landscape" : "portrait",
+        innerW: window.innerWidth,
+        innerH: window.innerHeight,
+        screenW: window.screen?.width,
+        screenH: window.screen?.height,
+        vvW: window.visualViewport?.width,
+        vvH: window.visualViewport?.height,
+        dpr: window.devicePixelRatio,
+        standalone: window.navigator?.standalone,
+        sat: cs.getPropertyValue("--debug-sat").trim(),
+        sar: cs.getPropertyValue("--debug-sar").trim(),
+        sab: cs.getPropertyValue("--debug-sab").trim(),
+        sal: cs.getPropertyValue("--debug-sal").trim(),
+      });
+    };
+    readDebugInfo();
+    window.addEventListener("resize", readDebugInfo);
+    window.addEventListener("orientationchange", readDebugInfo);
+    return () => {
+      window.removeEventListener("resize", readDebugInfo);
+      window.removeEventListener("orientationchange", readDebugInfo);
+    };
+  }, [showDebugOverlay]);
+
   // Configurable via .env (VITE_API_URL) so local dev doesn't require
   // editing source. Falls back to the production deployment.
   const BACKEND_URL =
@@ -156,9 +262,11 @@ export default function App() {
 
   const visibleSlots = slots.slice(0, playerCount);
   const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
-  // 5P squeezes tiles to a third of the screen height, so scale the life
-  // number and commander mini-grid with the viewport instead of fixed sizes.
-  const isCompact = playerCount === 5;
+  // 5P always squeezes tiles to a third of the screen height, so it always
+  // gets the clamp()-based compact sizing. Any other pod size gets it too
+  // whenever the viewport itself is short (landscape phone, small window),
+  // so nothing gets cut off regardless of pod size or orientation.
+  const isCompact = playerCount === 5 || isShortViewport;
 
   // Lethal commander damage — only counts opponents actually in the current
   // pod, so shrinking the pod size mid-game can't kill someone with damage
@@ -232,6 +340,11 @@ export default function App() {
     else setPlayerFavorites([]);
     setSearchQuery("");
     setSearchResults([]);
+    setPrintingsOptions(null);
+    setPrintingsForName("");
+    setDrawerTab("favorites");
+    setArmedDeleteFavId(null);
+    setShowCustomUpload(false);
   }, [activeMenuSlot, activeMenuPlayer?.id]);
 
   const fetchFavorites = async (playerId) => {
@@ -371,9 +484,39 @@ export default function App() {
             : s,
         ),
       );
+      setPrintingsOptions(null);
       setActiveMenuSlot(null);
     } catch (err) {
       console.error("Error saving favorite:", err);
+    }
+  };
+
+  // A search result only shows one art. Before saving it, check whether the
+  // card has other printings (different arts) and, if so, let the player
+  // pick which one instead of always saving whichever art Scryfall's
+  // default search happened to return.
+  const handleCardClick = async (card) => {
+    setIsLoadingPrintings(true);
+    try {
+      const res = await fetch(
+        `https://api.scryfall.com/cards/search?q=${encodeURIComponent(`!"${card.name}"`)}&unique=prints&order=released`,
+      );
+      const data = await res.json();
+      const prints = (data.data || []).filter(
+        (c) =>
+          c.image_uris?.art_crop || c.card_faces?.[0]?.image_uris?.art_crop,
+      );
+      if (prints.length > 1) {
+        setPrintingsOptions(prints);
+        setPrintingsForName(card.name);
+      } else {
+        handleSelectCommander(card);
+      }
+    } catch (err) {
+      console.error("Error fetching printings:", err);
+      handleSelectCommander(card); // fall back to saving the original result
+    } finally {
+      setIsLoadingPrintings(false);
     }
   };
 
@@ -392,6 +535,25 @@ export default function App() {
     setActiveMenuSlot(null);
   };
 
+  const handleDeleteFavorite = async (favId) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/favorites/${favId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setPlayerFavorites((prev) => prev.filter((f) => f.id !== favId));
+      } else {
+        console.error(
+          "Error deleting favorite: server responded",
+          res.status,
+        );
+      }
+    } catch (err) {
+      console.error("Error deleting favorite:", err);
+    }
+    setArmedDeleteFavId(null);
+  };
+
   const assignPlayerToSlot = (slotId, playerObj) => {
     setSlots((prev) =>
       prev.map((s) =>
@@ -401,18 +563,24 @@ export default function App() {
   };
 
   const showLifeDelta = (id, amount) => {
+    // Side effects live here, in the event handler itself — NOT inside the
+    // setLifeDeltas updater below, which stays a pure function of its
+    // previous state so it's safe for React to call however many times it
+    // wants (see the note on lifeDeltaTimers above).
+    if (lifeDeltaTimers.current[id]) clearTimeout(lifeDeltaTimers.current[id]);
+    lifeDeltaTimers.current[id] = setTimeout(() => {
+      delete lifeDeltaTimers.current[id];
+      setLifeDeltas((p) => {
+        const next = { ...p };
+        delete next[id];
+        return next;
+      });
+    }, 5000);
+
     setLifeDeltas((prev) => {
       const existing = prev[id];
-      if (existing?.timeoutId) clearTimeout(existing.timeoutId);
       const newTotal = (existing?.amount ?? 0) + amount;
-      const timeoutId = setTimeout(() => {
-        setLifeDeltas((p) => {
-          const next = { ...p };
-          delete next[id];
-          return next;
-        });
-      }, 5000);
-      return { ...prev, [id]: { amount: newTotal, timeoutId } };
+      return { ...prev, [id]: { amount: newTotal } };
     });
   };
 
@@ -464,6 +632,8 @@ export default function App() {
     );
     setStartingPlayerId(null);
     setIsRolling(true);
+    Object.values(lifeDeltaTimers.current).forEach(clearTimeout);
+    lifeDeltaTimers.current = {};
     setLifeDeltas({});
     setMonarchSlotId(null);
     setInitiativeSlotId(null);
@@ -471,6 +641,7 @@ export default function App() {
     autoWinTriggered.current = false;
     setWinner(null);
     setWinConfirmed(false);
+    setDeathColors({});
 
     let counter = 0;
     const maxTicks = 10;
@@ -495,7 +666,13 @@ export default function App() {
   // games table server-side, so there's no separate counter to bump (and no
   // way for the two to double-count or drift).
   const confirmWin = async () => {
-    if (!winner?.player) return;
+    if (!winner) return;
+    if (!winner.player) {
+      // This seat never had a profile linked, so there's nothing to record
+      // a win against — just acknowledge it so the game can move on.
+      setWinConfirmed(true);
+      return;
+    }
     try {
       const res = await fetch(`${BACKEND_URL}/games`, {
         method: "POST",
@@ -525,19 +702,47 @@ export default function App() {
     setActiveMenuSlot(null);
   };
 
-  // Auto-win detection. Re-arms itself if players come back above 0 (e.g.
-  // after cancelling a pending win and fixing a mis-tap).
+  // Auto-win detection. Considers every SEAT in the pod, not just the ones
+  // with a profile linked — a 4-player game with only 2 profiles loaded
+  // still has 4 people playing, and eliminating one profiled player
+  // shouldn't end the game while two unlinked seats are still alive.
+  // Re-arms itself if players come back above 0 (e.g. after cancelling a
+  // pending win and fixing a mis-tap).
   useEffect(() => {
     const currentVisible = slots.slice(0, playerCount);
-    const activePlayers = currentVisible.filter((s) => s.player);
-    if (activePlayers.length < 2) return;
-    const alive = activePlayers.filter((s) => s.life > 0 && !isLethalCmd(s));
+    if (currentVisible.length < 2) return;
+    const alive = currentVisible.filter((s) => s.life > 0 && !isLethalCmd(s));
     if (alive.length === 1 && !autoWinTriggered.current) {
       openWinScreen(alive[0]);
     } else if (alive.length > 1 && autoWinTriggered.current && !winner) {
       autoWinTriggered.current = false;
     }
   }, [slots, playerCount, winner]);
+
+  // Random neon color per elimination, assigned once when a seat goes down
+  // and cleared again once they're back above 0 — so it stays stable while
+  // "GG" is showing, but the next elimination (for them or anyone else)
+  // gets its own fresh random pick.
+  const [deathColors, setDeathColors] = useState({});
+  useEffect(() => {
+    const currentVisible = slots.slice(0, playerCount);
+    setDeathColors((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const s of currentVisible) {
+        const dead = s.life <= 0 || isLethalCmd(s);
+        if (dead && !next[s.id]) {
+          next[s.id] =
+            NEON_PALETTE[Math.floor(Math.random() * NEON_PALETTE.length)];
+          changed = true;
+        } else if (!dead && next[s.id]) {
+          delete next[s.id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [slots, playerCount]);
 
   const getShortName = (slot) => {
     if (!slot) return "?";
@@ -597,10 +802,26 @@ export default function App() {
 
   return (
     <div
-      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 p-1 gap-1 select-none text-white relative overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
-      {visibleSlots.map((slot, index) => {
+      {(() => {
+        const cmdDamageMode = activeCmdSlotId !== null;
+        const cmdViewerIndex = cmdDamageMode
+          ? visibleSlots.findIndex((s) => s.id === activeCmdSlotId)
+          : -1;
+        const cmdViewerSlot =
+          cmdDamageMode && cmdViewerIndex >= 0
+            ? visibleSlots[cmdViewerIndex]
+            : null;
+        // The viewer's own seat orientation — every opponent tile's damage
+        // number/controls get counter-rotated to match THIS, not their own
+        // native orientation, so they read right-side-up for whoever is
+        // actually looking at them right now.
+        const cmdViewerRotated = cmdViewerSlot
+          ? !!layout.cells[cmdViewerIndex]?.rotated
+          : false;
+        return visibleSlots.map((slot, index) => {
         const seat = layout.cells[index];
         const isRotated = seat.rotated;
         const isSpannedRow = seat.span === 2;
@@ -609,7 +830,25 @@ export default function App() {
 
         const lethalCommanderDamage = isLethalCmd(slot);
         const isDefeated = slot.life <= 0 || lethalCommanderDamage;
-        const showDefeatOverlay = isDefeated && adjustingSlotId !== slot.id;
+        // Commander-damage mode takes over every tile at once, so a defeat
+        // overlay popping up mid-edit would just be in the way — suppress
+        // it for the duration.
+        const showDefeatOverlay =
+          isDefeated && adjustingSlotId !== slot.id && !cmdDamageMode;
+
+        // Commander-damage entry mode: tapping the mini-grid trigger on a
+        // tile puts every OTHER tile into "how much damage has this player
+        // dealt to the viewer" mode, in place — no separate popup needed.
+        const isCmdViewerTile = cmdViewerSlot && slot.id === cmdViewerSlot.id;
+        const isCmdTargetTile = cmdViewerSlot && !isCmdViewerTile;
+        const cmdAmt = isCmdTargetTile
+          ? cmdViewerSlot.commanderDamage[slot.id] || 0
+          : 0;
+        // This tile's own seat orientation differs from the viewer's, so
+        // its damage number/controls need an extra local flip to read
+        // right-side-up for the person actually looking at them.
+        const cmdNeedsCounterRotate =
+          isCmdTargetTile && seat.rotated !== cmdViewerRotated;
 
         const delta = lifeDeltas[slot.id];
 
@@ -635,8 +874,10 @@ export default function App() {
               />
             )}
 
-            {/* Overshield overlay */}
-            {slot.life > startingLife && (
+            {/* Overshield overlay — only once a player is meaningfully
+                overhealed (10+ above starting life), not the moment they
+                tick one point over. */}
+            {slot.life > startingLife + 10 && (
               <div className="absolute inset-0 z-[1] pointer-events-none bg-emerald-400 animate-overshield rounded-2xl" />
             )}
 
@@ -645,7 +886,74 @@ export default function App() {
               <div className="absolute inset-0 z-[1] pointer-events-none bg-red-600 animate-heartbeat rounded-2xl" />
             )}
 
-            <div className="absolute inset-0 flex">
+            {isCmdTargetTile ? (
+              // Commander-damage entry for this opponent, in place of their
+              // normal life tap zones: tap = +1, long-press arms a -/+
+              // split (same interaction the old popup used).
+              <div
+                className={`absolute inset-0 flex touch-none ${cmdNeedsCounterRotate ? "rotate-180" : ""}`}
+              >
+                {editingCmdSlot === slot.id ? (
+                  <>
+                    <div
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        updateCommanderDamage(cmdViewerSlot.id, slot.id, -1);
+                      }}
+                      className="w-1/2 h-full touch-none active:bg-red-500/20 flex items-center justify-center"
+                    >
+                      <span className="text-2xl font-black text-neutral-400">
+                        −
+                      </span>
+                    </div>
+                    <div
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        updateCommanderDamage(cmdViewerSlot.id, slot.id, 1);
+                      }}
+                      className="w-1/2 h-full touch-none active:bg-green-500/20 flex items-center justify-center"
+                    >
+                      <span className="text-2xl font-black text-neutral-400">
+                        +
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div
+                    className="absolute inset-0 touch-none active:bg-white/10"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      const timer = setTimeout(
+                        () => setEditingCmdSlot(slot.id),
+                        500,
+                      );
+                      e.currentTarget.dataset.timer = timer;
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                      if (editingCmdSlot !== slot.id)
+                        updateCommanderDamage(cmdViewerSlot.id, slot.id, 1);
+                    }}
+                    onPointerLeave={(e) => {
+                      clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                    }}
+                  />
+                )}
+              </div>
+            ) : isCmdViewerTile ? (
+              // The viewer's own tile — tap anywhere to leave
+              // commander-damage mode and go back to normal life view.
+              <div
+                className="absolute inset-0 touch-none active:bg-white/5"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  setActiveCmdSlotId(null);
+                  setEditingCmdSlot(null);
+                }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex">
               <div
                 onPointerDown={(e) => {
                   e.stopPropagation();
@@ -684,7 +992,7 @@ export default function App() {
                   );
                   longPressRefs.current[`${slot.id}-left-interval`] = null;
                 }}
-                className="w-1/2 h-full active:bg-red-500/20 flex items-center justify-center"
+                className="w-1/2 h-full touch-none active:bg-red-500/20 flex items-center justify-center"
               >
                 <span className="text-2xl font-black text-neutral-400">−</span>
               </div>
@@ -726,84 +1034,111 @@ export default function App() {
                   );
                   longPressRefs.current[`${slot.id}-right-interval`] = null;
                 }}
-                className="w-1/2 h-full active:bg-green-500/20 flex items-center justify-center"
+                className="w-1/2 h-full touch-none active:bg-green-500/20 flex items-center justify-center"
               >
                 <span className="text-2xl font-black text-neutral-400">+</span>
               </div>
-            </div>
+              </div>
+            )}
 
             <div
               className={`relative z-10 flex flex-col items-center justify-between h-full w-full pointer-events-none ${isCompact ? "p-1.5" : "p-3"}`}
             >
-              <div className="flex justify-between w-full items-start pointer-events-none gap-2">
-                <div className="flex flex-col gap-1 items-start pointer-events-none">
-                  <span
-                    className={`font-bold tracking-wide flex items-center gap-1 bg-black/50 rounded-full border ${
-                      isCompact ? "text-[11px] px-2 py-0.5" : "text-sm px-3 py-1"
-                    } ${
-                      isStartingPlayer
-                        ? "border-yellow-500/50 text-yellow-400"
-                        : "border-neutral-700/30 text-neutral-200"
-                    }`}
-                  >
-                    <User size={isCompact ? 11 : 13} /> {displayName}
-                    {slot.player && getWinStreak(slot.player.id) >= 2 && (
-                      <span className="text-sm">🔥</span>
-                    )}
-                    {monarchSlotId === slot.id && (
-                      <span className="text-sm" title="Monarch">
-                        👑
-                      </span>
-                    )}
-                    {initiativeSlotId === slot.id && (
-                      <span className="text-sm" title="Initiative">
-                        ⚔️
-                      </span>
-                    )}
-                  </span>
-                </div>
-
+              <div className="flex justify-start w-full items-start pointer-events-none gap-2">
+                {/* Tapping the name itself opens Slot Configuration — replaces
+                    the old separate gear-icon button. */}
                 <button
                   onPointerDown={(e) => {
                     e.stopPropagation();
                     setActiveMenuSlot(slot.id);
                   }}
-                  className={`bg-black/50 border rounded-full transition-all flex-shrink-0 pointer-events-auto ${isCompact ? "p-2" : "p-3"} ${
+                  className={`font-bold tracking-wide flex items-center gap-1.5 bg-black/50 rounded-full border pointer-events-auto active:scale-95 transition-all ${
+                    isCompact ? "text-sm px-2.5 py-1" : "text-lg px-4 py-1.5"
+                  } ${
                     isStartingPlayer
-                      ? "border-yellow-500/30 text-yellow-500/70"
-                      : "border-neutral-700/30 text-neutral-400"
+                      ? "border-yellow-500/50 text-yellow-400"
+                      : "border-neutral-700/30 text-neutral-200"
                   }`}
                 >
-                  <Settings size={isCompact ? 16 : 20} />
+                  <User size={isCompact ? 14 : 17} /> {displayName}
+                  {slot.player && getWinStreak(slot.player.id) >= 2 && (
+                    <span className="text-sm">🔥</span>
+                  )}
+                  {monarchSlotId === slot.id && (
+                    <span className="text-sm" title="Monarch">
+                      👑
+                    </span>
+                  )}
+                  {initiativeSlotId === slot.id && (
+                    <span className="text-sm" title="Initiative">
+                      ⚔️
+                    </span>
+                  )}
                 </button>
               </div>
 
-              <div className="flex flex-col items-center justify-center my-auto relative">
-                <span
-                  className="font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums text-7xl sm:text-8xl md:text-9xl"
-                  style={
-                    isCompact
-                      ? { fontSize: "clamp(2rem, 11vh, 6rem)", lineHeight: 1 }
-                      : undefined
-                  }
-                >
-                  {slot.life}
-                </span>
-                {delta && (
-                  <span
-                    key={delta.amount}
-                    className={`absolute -top-8 text-2xl font-black tabular-nums pointer-events-none
-                      ${delta.amount > 0 ? "text-green-400" : "text-red-400"}
-                      animate-bounce`}
+              <div className="flex flex-col items-center justify-center my-auto relative gap-1">
+                {isCmdTargetTile ? (
+                  <div
+                    className={`flex flex-col items-center gap-1 ${cmdNeedsCounterRotate ? "rotate-180" : ""}`}
                   >
-                    {delta.amount > 0 ? `+${delta.amount}` : delta.amount}
-                  </span>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400 bg-black/40 px-2 py-0.5 rounded-full">
+                      Dealt to {getShortName(cmdViewerSlot)}
+                    </span>
+                    <span
+                      className={`font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] tabular-nums text-7xl sm:text-8xl md:text-9xl ${cmdAmt > 0 ? "text-red-400" : "text-neutral-500"}`}
+                      style={
+                        isCompact
+                          ? { fontSize: "clamp(2rem, 11vh, 6rem)", lineHeight: 1 }
+                          : undefined
+                      }
+                    >
+                      {cmdAmt}
+                    </span>
+                  </div>
+                ) : isCmdViewerTile ? (
+                  <>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
+                      Viewing As
+                    </span>
+                    <span className="text-2xl font-bold text-neutral-300">
+                      {displayName}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 mt-1">
+                      Tap anywhere to return
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className="font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums text-7xl sm:text-8xl md:text-9xl"
+                      style={
+                        isCompact
+                          ? { fontSize: "clamp(2rem, 11vh, 6rem)", lineHeight: 1 }
+                          : undefined
+                      }
+                    >
+                      {slot.life}
+                    </span>
+                    {delta && (
+                      <span
+                        className={`absolute -top-8 text-2xl font-black tabular-nums pointer-events-none
+                          ${delta.amount > 0 ? "text-green-400" : "text-red-400"}
+                          animate-bounce`}
+                      >
+                        {delta.amount > 0 ? `+${delta.amount}` : delta.amount}
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
 
-              {/* Commander damage mini-grid — boxes are placed at each
-                  opponent's actual seat position relative to this player */}
-              <div className="w-full flex flex-col items-center gap-2 pointer-events-none">
+              {/* Commander damage mini-grid trigger — bottom-left, hidden
+                  while commander-damage mode is already active elsewhere on
+                  the board. Opens by putting every OTHER tile into damage
+                  entry mode in place (see isCmdTargetTile above), no popup. */}
+              {!cmdDamageMode && (
+              <div className="w-full flex flex-col items-start gap-2 pointer-events-none">
                 <div className="pointer-events-auto">
                   <button
                     onPointerDown={(e) => {
@@ -868,29 +1203,38 @@ export default function App() {
                   </button>
                 </div>
               </div>
+              )}
             </div>
 
-            {/* Defeat overlay — blocks stray taps on a dead player, but the
-                header row stays clear and "Adjust Life" briefly re-enables
-                the controls so mis-taps can be corrected. */}
+            {/* Defeat overlay — covers the ENTIRE tile, header included.
+                "Adjust Life" is the only way back to the controls
+                underneath, so mis-taps can still be corrected. */}
             {showDefeatOverlay && (
-              <div
-                className={`absolute left-0 right-0 bottom-0 z-20 bg-black/60 flex flex-col items-center justify-center gap-1 select-none ${isCompact ? "top-9" : "top-14"}`}
-              >
-                <span className={isCompact ? "text-2xl opacity-90" : "text-5xl opacity-90"}>💀</span>
-                <span className="text-xs font-black uppercase tracking-widest text-red-500">
-                  {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
+              <div className="absolute inset-0 z-20 bg-black/80 flex flex-col items-center justify-center gap-3 select-none">
+                <span
+                  className={`font-black tracking-tighter animate-neon-flicker ${isCompact ? "text-6xl" : "text-8xl sm:text-9xl"}`}
+                  style={{
+                    color: "#fff",
+                    textShadow: `0 0 4px #fff, 0 0 11px #fff, 0 0 19px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow1}, 0 0 40px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow1}, 0 0 80px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow1}, 0 0 100px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow2}`,
+                  }}
+                >
+                  GG
                 </span>
-                {lethalCommanderDamage && slot.killedBySlotId && (
-                  <span className="text-[11px] font-bold text-neutral-400 tracking-wide mt-0.5">
-                    by{" "}
-                    <span className="text-red-400">
-                      {getShortName(
-                        slots.find((s) => s.id === slot.killedBySlotId),
-                      )}
-                    </span>
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-sm font-black uppercase tracking-widest text-red-500">
+                    {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
                   </span>
-                )}
+                  {lethalCommanderDamage && slot.killedBySlotId && (
+                    <span className="text-xs font-bold text-neutral-400 tracking-wide">
+                      by{" "}
+                      <span className="text-red-400">
+                        {getShortName(
+                          slots.find((s) => s.id === slot.killedBySlotId),
+                        )}
+                      </span>
+                    </span>
+                  )}
+                </div>
                 <button
                   onPointerDown={(e) => {
                     e.stopPropagation();
@@ -901,7 +1245,7 @@ export default function App() {
                       6000,
                     );
                   }}
-                  className="mt-2 text-[10px] font-bold uppercase tracking-wider text-neutral-300 bg-neutral-800/80 border border-neutral-700 px-3 py-1 rounded-full active:scale-95"
+                  className="mt-1 text-xs font-bold uppercase tracking-wider text-neutral-300 bg-neutral-800/80 border border-neutral-700 px-4 py-1.5 rounded-full active:scale-95"
                 >
                   Adjust Life
                 </button>
@@ -909,7 +1253,8 @@ export default function App() {
             )}
           </div>
         );
-      })}
+        });
+      })()}
 
       {/* 2. CENTER CONTROL HUB TRIGGER BUTTON */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40">
@@ -928,26 +1273,26 @@ export default function App() {
           onPointerDown={() => setShowControlHub(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-lg rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar overscroll-contain"
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
-              <h2 className="text-lg font-bold text-neutral-200">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <h2 className="text-xl font-bold text-neutral-200">
                 Match Controls
               </h2>
               <button
                 onClick={() => setShowControlHub(false)}
-                className="p-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
               >
-                <X size={16} />
+                <X size={18} />
               </button>
             </div>
 
             <div>
-              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
-                <Users size={12} /> Pod Size
+              <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
+                <Users size={14} /> Pod Size
               </label>
-              <div className="grid grid-cols-4 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+              <div className="grid grid-cols-4 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
                 {[2, 3, 4, 5].map((num) => (
                   <button
                     key={num}
@@ -955,7 +1300,7 @@ export default function App() {
                       setPlayerCount(num);
                       setStartingPlayerId(null);
                     }}
-                    className={`py-1.5 rounded-lg font-bold text-xs transition-all ${
+                    className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
                       playerCount === num
                         ? "bg-blue-600 text-white"
                         : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
@@ -968,18 +1313,18 @@ export default function App() {
             </div>
 
             <div>
-              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5 flex items-center gap-1">
-                <Heart size={12} /> Starting Life{" "}
+              <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
+                <Heart size={14} /> Starting Life{" "}
                 <span className="normal-case font-normal text-neutral-600">
                   (applies on reset)
                 </span>
               </label>
-              <div className="grid grid-cols-3 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+              <div className="grid grid-cols-3 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
                 {[20, 30, 40].map((num) => (
                   <button
                     key={num}
                     onClick={() => setStartingLife(num)}
-                    className={`py-1.5 rounded-lg font-bold text-xs transition-all ${
+                    className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
                       startingLife === num
                         ? "bg-blue-600 text-white"
                         : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
@@ -991,15 +1336,15 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => {
                   fetchGameHistory();
                   setShowHistory(true);
                 }}
-                className="py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+                className="py-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-base transition-all active:scale-95"
               >
-                <Star size={16} className="text-yellow-500 fill-yellow-500" />
+                <Star size={18} className="text-yellow-500 fill-yellow-500" />
                 History
               </button>
               <button
@@ -1008,9 +1353,9 @@ export default function App() {
                   fetchPlayers();
                   setShowStats(true);
                 }}
-                className="py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+                className="py-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-base transition-all active:scale-95"
               >
-                <BarChart3 size={16} className="text-blue-400" />
+                <BarChart3 size={18} className="text-blue-400" />
                 Stats
               </button>
             </div>
@@ -1022,7 +1367,7 @@ export default function App() {
                 setCoinFlipResults([]);
                 setDiceResults(null);
               }}
-              className="w-full py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-all active:scale-95"
+              className="w-full py-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-base transition-all active:scale-95"
             >
               🪙 Coin Flip & Dice
             </button>
@@ -1030,9 +1375,9 @@ export default function App() {
             <button
               onClick={handleNewGameAndRoll}
               disabled={isRolling}
-              className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+              className="w-full py-5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 text-base shadow-md active:scale-95 transition-all"
             >
-              <Dices size={18} className={isRolling ? "animate-spin" : ""} />
+              <Dices size={20} className={isRolling ? "animate-spin" : ""} />
               {isRolling ? "Rolling Turn One..." : "Reset & Roll First"}
             </button>
           </div>
@@ -1046,54 +1391,51 @@ export default function App() {
           onPointerDown={() => setActiveMenuSlot(null)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-md rounded-2xl p-6 flex flex-col gap-5 max-h-[90vh] overflow-y-auto shadow-2xl"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-2xl rounded-2xl p-6 flex flex-col gap-5 max-h-[94vh] overflow-y-auto no-scrollbar overscroll-contain shadow-2xl"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
               <h2 className="text-xl font-bold text-neutral-100">
                 Slot Configuration
               </h2>
-              <button
-                onClick={() => setActiveMenuSlot(null)}
-                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Table status designations for this seat */}
-            <div>
-              <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
-                Table Status
-              </h3>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center gap-1.5">
+                {/* Table status — compact icon toggles instead of a whole
+                    separate labeled section. */}
                 <button
+                  title="Monarch"
                   onClick={() =>
                     setMonarchSlotId((m) =>
                       m === activeMenuSlot ? null : activeMenuSlot,
                     )
                   }
-                  className={`py-2 rounded-xl font-bold text-xs border transition-all active:scale-95 ${
+                  className={`p-2 text-base rounded-full border transition-all active:scale-95 ${
                     monarchSlotId === activeMenuSlot
-                      ? "bg-yellow-600/30 border-yellow-500/60 text-yellow-300"
-                      : "bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+                      ? "bg-yellow-600/30 border-yellow-500/60"
+                      : "bg-neutral-950 border-neutral-800 hover:border-neutral-700"
                   }`}
                 >
-                  👑 Monarch
+                  👑
                 </button>
                 <button
+                  title="Initiative"
                   onClick={() =>
                     setInitiativeSlotId((m) =>
                       m === activeMenuSlot ? null : activeMenuSlot,
                     )
                   }
-                  className={`py-2 rounded-xl font-bold text-xs border transition-all active:scale-95 ${
+                  className={`p-2 text-base rounded-full border transition-all active:scale-95 ${
                     initiativeSlotId === activeMenuSlot
-                      ? "bg-blue-600/30 border-blue-500/60 text-blue-300"
-                      : "bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+                      ? "bg-blue-600/30 border-blue-500/60"
+                      : "bg-neutral-950 border-neutral-800 hover:border-neutral-700"
                   }`}
                 >
-                  ⚔️ Initiative
+                  ⚔️
+                </button>
+                <button
+                  onClick={() => setActiveMenuSlot(null)}
+                  className="p-1.5 ml-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+                >
+                  <X size={18} />
                 </button>
               </div>
             </div>
@@ -1110,95 +1452,102 @@ export default function App() {
                       value={newPlayerName}
                       onChange={(e) => setNewPlayerName(e.target.value)}
                       placeholder="Player Name"
-                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2 text-sm outline-none focus:border-neutral-600 text-white"
+                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-base outline-none focus:border-neutral-600 text-white"
                     />
                     <button
                       type="submit"
-                      className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
+                      className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
                     >
-                      <Plus size={18} />
+                      <Plus size={20} />
                     </button>
                   </form>
                 </div>
                 <div>
                   <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
-                    Assign Profile to Slot
+                    Assign Profile to Slot{" "}
+                    <span className="normal-case font-normal text-neutral-600">
+                      (most played first)
+                    </span>
                   </h3>
-                  <div className="flex flex-col gap-1 max-h-[180px] overflow-y-auto border border-neutral-800 bg-neutral-950/40 p-1 rounded-xl">
+                  <div className="flex flex-col gap-2 max-h-[50vh] overflow-y-auto no-scrollbar overscroll-contain border border-neutral-800 bg-neutral-950/40 p-2 rounded-xl">
                     {dbPlayers.length === 0 ? (
-                      <p className="text-xs text-neutral-500 text-center py-4">
+                      <p className="text-sm text-neutral-500 text-center py-4">
                         No profiles found.
                       </p>
                     ) : (
-                      dbPlayers.map((p) => (
-                        <div
-                          key={p.id}
-                          className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-neutral-800"
-                        >
-                          {renamingPlayerId === p.id ? (
-                            <div className="flex flex-1 gap-1">
-                              <input
-                                autoFocus
-                                value={renameValue}
-                                onChange={(e) => setRenameValue(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter")
-                                    handleRenamePlayer(p.id);
-                                  if (e.key === "Escape") {
+                      [...dbPlayers]
+                        .sort((a, b) => (b.wins || 0) - (a.wins || 0))
+                        .map((p) => (
+                          <div
+                            key={p.id}
+                            className="flex items-center gap-2 px-3 py-3 rounded-xl bg-neutral-800"
+                          >
+                            {renamingPlayerId === p.id ? (
+                              <div className="flex flex-1 gap-1">
+                                <input
+                                  autoFocus
+                                  value={renameValue}
+                                  onChange={(e) =>
+                                    setRenameValue(e.target.value)
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter")
+                                      handleRenamePlayer(p.id);
+                                    if (e.key === "Escape") {
+                                      setRenamingPlayerId(null);
+                                      setRenameValue("");
+                                    }
+                                  }}
+                                  className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-1 text-base text-white outline-none"
+                                />
+                                <button
+                                  onClick={() => handleRenamePlayer(p.id)}
+                                  className="text-sm bg-blue-600 text-white font-bold px-3 py-1 rounded-lg"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => {
                                     setRenamingPlayerId(null);
                                     setRenameValue("");
+                                  }}
+                                  className="text-neutral-400 hover:text-white px-1"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() =>
+                                    assignPlayerToSlot(activeMenuSlot, p)
                                   }
-                                }}
-                                className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none"
-                              />
-                              <button
-                                onClick={() => handleRenamePlayer(p.id)}
-                                className="text-xs bg-blue-600 text-white font-bold px-2 py-0.5 rounded-lg"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setRenamingPlayerId(null);
-                                  setRenameValue("");
-                                }}
-                                className="text-neutral-400 hover:text-white px-1"
-                              >
-                                <X size={14} />
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() =>
-                                  assignPlayerToSlot(activeMenuSlot, p)
-                                }
-                                className="flex-1 flex justify-between items-center text-sm text-neutral-200 hover:text-white"
-                              >
-                                <span>{p.name}</span>
-                                <span className="text-xs bg-neutral-900 px-2 py-0.5 rounded-md border border-neutral-700/50 text-amber-400 font-medium">
-                                  🏆 {p.wins || 0}
-                                </span>
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setRenamingPlayerId(p.id);
-                                  setRenameValue(p.name);
-                                }}
-                                className="p-1.5 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-700"
-                              >
-                                <Settings size={13} />
-                              </button>
-                              <button
-                                onClick={() => handleDeletePlayer(p.id)}
-                                className="p-1.5 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-neutral-700"
-                              >
-                                <X size={13} />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      ))
+                                  className="flex-1 flex justify-between items-center text-base text-neutral-200 hover:text-white"
+                                >
+                                  <span className="truncate">{p.name}</span>
+                                  <span className="text-xs bg-neutral-900 px-2 py-1 rounded-md border border-neutral-700/50 text-amber-400 font-medium shrink-0 ml-2">
+                                    🏆 {p.wins || 0}
+                                  </span>
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setRenamingPlayerId(p.id);
+                                    setRenameValue(p.name);
+                                  }}
+                                  className="p-2 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-700"
+                                >
+                                  <Settings size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeletePlayer(p.id)}
+                                  className="p-2 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-neutral-700"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        ))
                     )}
                   </div>
                 </div>
@@ -1243,7 +1592,7 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-blue-400">
+                        <span className="text-xl font-bold text-blue-400">
                           {activeMenuPlayer.name}
                         </span>
                         <button
@@ -1251,17 +1600,17 @@ export default function App() {
                             setRenamingPlayerId(activeMenuPlayer.id);
                             setRenameValue(activeMenuPlayer.name);
                           }}
-                          className="p-1 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-800"
+                          className="p-1.5 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-800"
                         >
-                          <Settings size={13} />
+                          <Settings size={16} />
                         </button>
                       </div>
                     )}
-                    <span className="text-xs text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                    <span className="text-sm text-amber-400 font-bold bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
                       🏆 {activeMenuPlayer.wins || 0} Wins
                     </span>
                   </div>
-                  <div className="flex justify-between items-center pt-1">
+                  <div className="flex justify-between items-center gap-2 pt-2">
                     <button
                       onClick={() => {
                         const slot = slots.find(
@@ -1269,7 +1618,7 @@ export default function App() {
                         );
                         if (slot) openWinScreen(slot);
                       }}
-                      className="text-xs bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg shadow-md transition-all active:scale-95"
+                      className="text-sm bg-amber-600 hover:bg-amber-500 text-white font-bold px-4 py-2 rounded-lg shadow-md transition-all active:scale-95"
                     >
                       Record Match Win 🎉
                     </button>
@@ -1283,180 +1632,370 @@ export default function App() {
                           ),
                         )
                       }
-                      className="text-xs text-neutral-400 underline hover:text-red-400 transition-colors"
+                      className="flex items-center gap-1.5 text-xs font-bold text-neutral-300 bg-neutral-800 hover:bg-red-900/40 hover:text-red-400 border border-neutral-700 hover:border-red-800/60 px-3 py-2 rounded-lg transition-all active:scale-95"
                     >
-                      Unlink Profile
+                      <UserMinus size={13} />
+                      Unlink
                     </button>
                   </div>
                 </div>
 
-                <div>
-                  <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                    <Star
-                      size={12}
-                      className="text-yellow-500 fill-yellow-500"
-                    />{" "}
-                    Favorites List
-                  </h3>
-                  <div className="flex gap-2 overflow-x-auto pb-2">
-                    {playerFavorites.length === 0 ? (
-                      <p className="text-xs text-neutral-600 italic py-1">
-                        No favorited commanders yet.
-                      </p>
-                    ) : (
-                      playerFavorites.map((fav) => (
-                        <button
-                          key={fav.id}
-                          onClick={() => handleSelectExistingFavorite(fav)}
-                          className="flex-shrink-0 relative group h-14 w-24 rounded-lg overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all"
-                        >
-                          <img
-                            src={resolveArt(fav.image_url)}
-                            alt={fav.commander_name}
-                            className="h-full w-full object-cover brightness-70 group-hover:scale-105 transition-all"
-                          />
-                          <div className="absolute inset-0 bg-black/40 flex items-end p-1">
-                            <span className="text-[10px] font-bold truncate block w-full text-left">
+                {/* Browsing existing favorites and adding new art are two
+                    different jobs — splitting them into tabs instead of one
+                    long stacked column is what actually fixes "scatterbrained". */}
+                <div className="grid grid-cols-2 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+                  <button
+                    onClick={() => {
+                      setDrawerTab("favorites");
+                      setShowCustomUpload(false);
+                    }}
+                    className={`py-2 rounded-lg font-bold text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-1.5 ${
+                      drawerTab === "favorites"
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    <Star size={13} /> Favorites
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDrawerTab("add");
+                      setArmedDeleteFavId(null);
+                    }}
+                    className={`py-2 rounded-lg font-bold text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-1.5 ${
+                      drawerTab === "add"
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    <Plus size={13} /> Add New
+                  </button>
+                </div>
+
+                {drawerTab === "favorites" && (
+                  <div>
+                  {playerFavorites.length === 0 ? (
+                    <p className="text-xs text-neutral-600 italic py-1">
+                      No favorited commanders yet.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
+                      {playerFavorites.map((fav) => {
+                        const isArmed = armedDeleteFavId === fav.id;
+                        return (
+                          <div
+                            key={fav.id}
+                            className={`relative group w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border transition-all select-none ${
+                              isArmed
+                                ? "border-red-500"
+                                : "border-neutral-800 hover:border-yellow-500"
+                            }`}
+                            // Long press (500ms) arms this card for deletion
+                            // instead of an always-visible X button. A short
+                            // tap while armed confirms the delete; a short
+                            // tap anywhere else dismisses the armed state
+                            // and still performs its own normal action —
+                            // same forgiving pattern as the rest of the app's
+                            // press-and-hold controls (no confirm() dialog
+                            // needed, the gesture itself is the confirmation).
+                            // Also tracks how far the finger has moved since
+                            // pointerdown: scrolling this grid means dragging
+                            // across a card, and without this check that drag
+                            // was being misread as either a tap-to-select
+                            // (fast flick) or a long-press-to-arm (slow drag).
+                            onPointerDown={(e) => {
+                              favJustArmed.current = false;
+                              e.currentTarget.dataset.dragged = "";
+                              e.currentTarget.dataset.startX = e.clientX;
+                              e.currentTarget.dataset.startY = e.clientY;
+                              const timer = setTimeout(() => {
+                                favJustArmed.current = true;
+                                setArmedDeleteFavId(fav.id);
+                              }, 500);
+                              e.currentTarget.dataset.timer = timer;
+                            }}
+                            onPointerMove={(e) => {
+                              const startX = parseFloat(
+                                e.currentTarget.dataset.startX,
+                              );
+                              const startY = parseFloat(
+                                e.currentTarget.dataset.startY,
+                              );
+                              if (Number.isNaN(startX) || Number.isNaN(startY))
+                                return;
+                              const moved = Math.hypot(
+                                e.clientX - startX,
+                                e.clientY - startY,
+                              );
+                              if (moved > 10) {
+                                // The finger is scrolling the list, not
+                                // tapping or holding this card — cancel the
+                                // long-press arm and mark this gesture so the
+                                // eventual pointerUp is ignored.
+                                clearTimeout(
+                                  parseInt(e.currentTarget.dataset.timer),
+                                );
+                                e.currentTarget.dataset.dragged = "1";
+                              }
+                            }}
+                            onPointerUp={(e) => {
+                              clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                              if (e.currentTarget.dataset.dragged === "1") {
+                                favJustArmed.current = false;
+                                return;
+                              }
+                              if (favJustArmed.current) {
+                                // Tail end of the long-press gesture that just
+                                // armed this card — not a new tap.
+                                favJustArmed.current = false;
+                                return;
+                              }
+                              if (isArmed) {
+                                handleDeleteFavorite(fav.id);
+                              } else {
+                                if (armedDeleteFavId !== null)
+                                  setArmedDeleteFavId(null);
+                                handleSelectExistingFavorite(fav);
+                              }
+                            }}
+                            onPointerLeave={(e) => {
+                              clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                            }}
+                          >
+                            <img
+                              src={resolveArt(fav.image_url)}
+                              alt={fav.commander_name}
+                              className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
+                            <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
                               {fav.commander_name}
                             </span>
+                            {isArmed && (
+                              <div className="absolute inset-0 bg-red-600/85 flex flex-col items-center justify-center gap-1">
+                                <X size={22} className="text-white" />
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-white">
+                                  Tap to Delete
+                                </span>
+                              </div>
+                            )}
                           </div>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t border-neutral-800/60 pt-3">
-                  <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
-                    Upload Custom Proxy Art
-                  </h3>
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      const name = e.target.elements.customName.value.trim();
-                      const file = e.target.elements.customFile.files[0];
-                      if (!name || !file) return;
-                      const currentSlot = slots.find(
-                        (s) => s.id === activeMenuSlot,
-                      );
-                      const formData = new FormData();
-                      formData.append("commander_name", name);
-                      formData.append("image", file);
-                      try {
-                        const res = await fetch(
-                          `${BACKEND_URL}/players/${currentSlot.player.id}/upload-favorite`,
-                          { method: "POST", body: formData },
                         );
-                        if (res.ok) {
-                          const savedFavorite = await res.json();
-                          e.target.reset();
-                          fetchFavorites(currentSlot.player.id);
-                          setSlots((prev) =>
-                            prev.map((s) =>
-                              s.id === activeMenuSlot
-                                ? {
-                                    ...s,
-                                    bgImage: resolveArt(
-                                      savedFavorite.image_url,
-                                    ),
-                                    commanderName: name,
-                                  }
-                                : s,
-                            ),
-                          );
-                          setActiveMenuSlot(null);
-                        } else {
-                          const errBody = await res.json().catch(() => ({}));
-                          alert(errBody.error || "Upload failed.");
-                        }
-                      } catch (err) {
-                        console.error("Upload error:", err);
-                      }
-                    }}
-                    className="flex flex-col gap-2"
-                  >
-                    <input
-                      name="customName"
-                      type="text"
-                      placeholder="Commander Name (e.g., Watercolor Grimgrin)"
-                      className="bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs outline-none focus:border-neutral-600 text-white"
-                      required
-                    />
-                    <div className="flex gap-2 items-center">
-                      <input
-                        name="customFile"
-                        type="file"
-                        accept="image/*"
-                        className="flex-1 text-xs text-neutral-400 file:mr-2 file:py-1 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-neutral-800 file:text-neutral-200 cursor-pointer"
-                        required
-                      />
-                      <button
-                        type="submit"
-                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md"
-                      >
-                        Upload
-                      </button>
+                      })}
                     </div>
-                  </form>
-                </div>
+                  )}
+                  </div>
+                )}
 
-                <div className="border-t border-neutral-800/60 pt-3">
-                  <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
-                    Search Scryfall Art
-                  </h3>
+                {drawerTab === "add" && (
+                <div className="flex flex-col gap-4">
+                  {/* Search is the primary, default way to add a commander —
+                      simple and visual instead of a form full of fields. */}
                   <form onSubmit={handleScryfallSearch} className="flex gap-2">
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="e.g. Edgar Markov"
-                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2 text-sm outline-none focus:border-neutral-600 text-white"
+                      placeholder="Search for a commander (e.g. Edgar Markov)"
+                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-base outline-none focus:border-neutral-600 text-white"
                     />
                     <button
                       type="submit"
-                      className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
+                      className="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
                     >
                       {isSearching ? (
-                        <Loader2 size={18} className="animate-spin" />
+                        <Loader2 size={20} className="animate-spin" />
                       ) : (
-                        <Search size={18} />
+                        <Search size={20} />
                       )}
                     </button>
                   </form>
-                </div>
 
-                {searchResults.length > 0 && (
-                  <div className="border border-neutral-800 bg-neutral-950 p-2 rounded-xl max-h-[150px] overflow-y-auto flex flex-col gap-1">
-                    {searchResults.map((card) => {
-                      const img =
-                        card.image_uris?.art_crop ||
-                        card.card_faces?.[0]?.image_uris?.art_crop ||
-                        "";
-                      return (
+                  {/* Printings picker — shown after tapping a search result
+                      that has more than one printing, so a specific art can
+                      be chosen instead of always saving whichever one
+                      Scryfall's default search returned. */}
+                  {printingsOptions ? (
+                    <div>
+                      <div className="flex items-center justify-between px-0.5 pb-2">
+                        <span className="text-sm font-bold text-neutral-300">
+                          Choose art for {printingsForName}
+                        </span>
                         <button
-                          key={card.id}
-                          onClick={() => handleSelectCommander(card)}
-                          className="w-full flex items-center gap-3 p-1.5 hover:bg-neutral-800/60 rounded-lg text-left group"
+                          onClick={() => setPrintingsOptions(null)}
+                          className="p-1.5 text-neutral-500 hover:text-white rounded-full hover:bg-neutral-800"
                         >
-                          {img && (
-                            <img
-                              src={img}
-                              className="h-9 w-12 object-cover rounded-md border border-neutral-800"
-                              alt=""
-                            />
-                          )}
-                          <div className="flex flex-col">
-                            <span className="text-sm font-medium text-neutral-200 group-hover:text-white">
-                              {card.name}
-                            </span>
-                            <span className="text-[10px] text-neutral-500">
-                              {card.type_line}
-                            </span>
-                          </div>
+                          <X size={16} />
                         </button>
-                      );
-                    })}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
+                        {printingsOptions.map((print) => {
+                          const img =
+                            print.image_uris?.art_crop ||
+                            print.card_faces?.[0]?.image_uris?.art_crop ||
+                            "";
+                          return (
+                            <button
+                              key={print.id}
+                              onClick={() => handleSelectCommander(print)}
+                              className="relative w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group"
+                            >
+                              {img && (
+                                <img
+                                  src={img}
+                                  className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
+                                  alt={print.set_name || ""}
+                                />
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/5 to-transparent" />
+                              <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
+                                {print.set_name}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    (searchResults.length > 0 || isLoadingPrintings) && (
+                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
+                        {searchResults.map((card) => {
+                          const img =
+                            card.image_uris?.art_crop ||
+                            card.card_faces?.[0]?.image_uris?.art_crop ||
+                            "";
+                          return (
+                            <button
+                              key={card.id}
+                              disabled={isLoadingPrintings}
+                              onClick={() => handleCardClick(card)}
+                              className="relative w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group disabled:opacity-50"
+                            >
+                              {img && (
+                                <img
+                                  src={img}
+                                  className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
+                                  alt=""
+                                />
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
+                              <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
+                                {card.name}
+                              </span>
+                              {isLoadingPrintings && (
+                                <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                  <Loader2
+                                    size={22}
+                                    className="animate-spin text-white"
+                                  />
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
+
+                  {/* Custom art upload — a secondary path, tucked behind a
+                      toggle so the default view stays simple: search first. */}
+                  <div className="border-t border-neutral-800/60 pt-3">
+                    {showCustomUpload ? (
+                      <>
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+                            Upload Custom Art
+                          </h3>
+                          <button
+                            onClick={() => setShowCustomUpload(false)}
+                            className="p-1 text-neutral-500 hover:text-white rounded-full hover:bg-neutral-800"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                        <form
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const name =
+                              e.target.elements.customName.value.trim();
+                            const file =
+                              e.target.elements.customFile.files[0];
+                            if (!name || !file) return;
+                            const currentSlot = slots.find(
+                              (s) => s.id === activeMenuSlot,
+                            );
+                            const formData = new FormData();
+                            formData.append("commander_name", name);
+                            formData.append("image", file);
+                            try {
+                              const res = await fetch(
+                                `${BACKEND_URL}/players/${currentSlot.player.id}/upload-favorite`,
+                                { method: "POST", body: formData },
+                              );
+                              if (res.ok) {
+                                const savedFavorite = await res.json();
+                                e.target.reset();
+                                fetchFavorites(currentSlot.player.id);
+                                setSlots((prev) =>
+                                  prev.map((s) =>
+                                    s.id === activeMenuSlot
+                                      ? {
+                                          ...s,
+                                          bgImage: resolveArt(
+                                            savedFavorite.image_url,
+                                          ),
+                                          commanderName: name,
+                                        }
+                                      : s,
+                                  ),
+                                );
+                                setActiveMenuSlot(null);
+                              } else {
+                                const errBody = await res
+                                  .json()
+                                  .catch(() => ({}));
+                                alert(errBody.error || "Upload failed.");
+                              }
+                            } catch (err) {
+                              console.error("Upload error:", err);
+                            }
+                          }}
+                          className="flex flex-col gap-2"
+                        >
+                          <input
+                            name="customName"
+                            type="text"
+                            placeholder="Commander Name (e.g., Watercolor Grimgrin)"
+                            className="bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-sm outline-none focus:border-neutral-600 text-white"
+                            required
+                          />
+                          <div className="flex gap-2 items-center">
+                            <input
+                              name="customFile"
+                              type="file"
+                              accept="image/*"
+                              className="flex-1 text-xs text-neutral-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-neutral-800 file:text-neutral-200 cursor-pointer"
+                              required
+                            />
+                            <button
+                              type="submit"
+                              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md"
+                            >
+                              Upload
+                            </button>
+                          </div>
+                        </form>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setShowCustomUpload(true)}
+                        className="text-xs font-semibold text-neutral-500 hover:text-neutral-300 transition-colors"
+                      >
+                        + Upload your own custom art instead
+                      </button>
+                    )}
                   </div>
+                </div>
                 )}
               </div>
             )}
@@ -1486,7 +2025,7 @@ export default function App() {
                 <X size={16} />
               </button>
             </div>
-            <div className="flex flex-col gap-2 overflow-y-auto">
+            <div className="flex flex-col gap-2 overflow-y-auto no-scrollbar overscroll-contain">
               {gameHistory.length === 0 ? (
                 <p className="text-sm text-neutral-500 text-center py-8 italic">
                   No games recorded yet.
@@ -1526,7 +2065,7 @@ export default function App() {
           onPointerDown={() => setShowStats(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl overflow-y-auto"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl overflow-y-auto no-scrollbar overscroll-contain"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
@@ -1616,156 +2155,6 @@ export default function App() {
         </div>
       )}
 
-      {/* 7. COMMANDER DAMAGE POPUP — boxes are laid out to mirror the table
-          from the viewing player's seat, for every pod size. */}
-      {activeCmdSlotId !== null &&
-        (() => {
-          const viewerIndex = visibleSlots.findIndex(
-            (s) => s.id === activeCmdSlotId,
-          );
-          const targetSlot = visibleSlots[viewerIndex];
-          if (!targetSlot) return null;
-          const viewerRotated = layout.cells[viewerIndex]?.rotated;
-          return (
-            <div
-              className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                setActiveCmdSlotId(null);
-                setEditingCmdSlot(null);
-              }}
-            >
-              <div
-                className={`grid gap-3 p-4 w-[90vw] max-w-sm ${viewerRotated ? "rotate-180" : ""}`}
-                style={{
-                  gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                {visibleSlots.map((opp, oppIndex) => {
-                  const cell = getSeatCell(playerCount, oppIndex, viewerIndex);
-                  const cellStyle = {
-                    gridRow: cell.row + 1,
-                    gridColumn: `${cell.col + 1} / span ${cell.span}`,
-                  };
-
-                  if (opp.id === targetSlot.id) {
-                    return (
-                      <div
-                        key={`self-${opp.id}`}
-                        style={{
-                          ...cellStyle,
-                          height: "clamp(56px, 24vh, 7rem)",
-                        }}
-                        className="rounded-2xl bg-neutral-950/60 border-2 border-neutral-800 flex items-center justify-center"
-                      >
-                        <span className="text-lg font-black text-neutral-600 uppercase tracking-widest">
-                          ME
-                        </span>
-                      </div>
-                    );
-                  }
-
-                  const amt = targetSlot.commanderDamage[opp.id] || 0;
-
-                  return (
-                    <div
-                      key={opp.id}
-                      style={{
-                        ...cellStyle,
-                        height: "clamp(56px, 24vh, 7rem)",
-                      }}
-                      className={`rounded-2xl border-2 flex flex-col items-center justify-center relative overflow-hidden ${amt > 0 ? "border-red-700/50" : "border-neutral-700"}`}
-                    >
-                      {opp.bgImage ? (
-                        <div
-                          className="absolute inset-0 bg-cover bg-top"
-                          style={{
-                            backgroundImage: `url(${opp.bgImage})`,
-                            filter:
-                              amt > 0
-                                ? "brightness(0.65) contrast(1.2) sepia(0.4)"
-                                : "brightness(0.55) contrast(1.1)",
-                          }}
-                        />
-                      ) : (
-                        <div
-                          className={`absolute inset-0 ${amt > 0 ? "bg-red-950/40" : "bg-neutral-900"}`}
-                        />
-                      )}
-                      <span className="absolute top-2 left-0 right-0 text-center text-[10px] font-black uppercase tracking-widest text-white/60 z-10 px-1 truncate">
-                        {getShortName(opp)}
-                      </span>
-                      <span
-                        className={`text-4xl font-black tabular-nums pointer-events-none z-10 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)] ${amt > 0 ? "text-red-400" : "text-neutral-400"}`}
-                      >
-                        {amt}
-                      </span>
-                      <div className="absolute inset-0 flex">
-                        {editingCmdSlot === opp.id ? (
-                          <>
-                            <div
-                              onPointerDown={(e) => {
-                                e.stopPropagation();
-                                updateCommanderDamage(
-                                  targetSlot.id,
-                                  opp.id,
-                                  -1,
-                                );
-                              }}
-                              className="w-1/2 h-full active:bg-red-500/20 flex items-center justify-center"
-                            >
-                              <span className="text-2xl font-black text-neutral-400">
-                                −
-                              </span>
-                            </div>
-                            <div
-                              onPointerDown={(e) => {
-                                e.stopPropagation();
-                                updateCommanderDamage(targetSlot.id, opp.id, 1);
-                              }}
-                              className="w-1/2 h-full active:bg-green-500/20 flex items-center justify-center"
-                            >
-                              <span className="text-2xl font-black text-neutral-400">
-                                +
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          <div
-                            className="absolute inset-0 active:bg-white/10"
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              const timer = setTimeout(
-                                () => setEditingCmdSlot(opp.id),
-                                500,
-                              );
-                              e.currentTarget.dataset.timer = timer;
-                            }}
-                            onPointerUp={(e) => {
-                              e.stopPropagation();
-                              clearTimeout(
-                                parseInt(e.currentTarget.dataset.timer),
-                              );
-                              if (editingCmdSlot !== opp.id)
-                                updateCommanderDamage(targetSlot.id, opp.id, 1);
-                            }}
-                            onPointerLeave={(e) => {
-                              clearTimeout(
-                                parseInt(e.currentTarget.dataset.timer),
-                              );
-                            }}
-                          />
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })()}
-
       {/* 8. COIN FLIP & DICE MODAL */}
       {showCoinFlip && (
         <div
@@ -1773,7 +2162,7 @@ export default function App() {
           onPointerDown={() => setShowCoinFlip(false)}
         >
           <div
-            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar overscroll-contain"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
@@ -1874,7 +2263,7 @@ export default function App() {
                     Tails: {coinFlipResults.filter((r) => r === "tails").length}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar overscroll-contain">
                   {coinFlipResults.map((result, i) => (
                     <div
                       key={i}
@@ -1903,7 +2292,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar overscroll-contain">
                   {diceResults.values.map((v, i) => (
                     <div
                       key={i}
@@ -1941,20 +2330,27 @@ export default function App() {
                 {winConfirmed ? "Winner" : "Victory?"}
               </span>
               <span className="text-5xl font-black text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.9)]">
-                {winner.player.name}
+                {winner.player ? winner.player.name : getShortName(winner)}
               </span>
               {winner.commanderName && (
                 <span className="text-sm font-bold text-neutral-400 uppercase tracking-widest mt-1">
                   {winner.commanderName}
                 </span>
               )}
+              {!winner.player && (
+                <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-widest mt-1">
+                  No profile linked — win won't be recorded
+                </span>
+              )}
             </div>
 
             {winConfirmed ? (
               <>
-                <span className="text-sm text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full">
-                  🏆 {winnerLifetimeWins} lifetime wins
-                </span>
+                {winner.player && (
+                  <span className="text-sm text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full">
+                    🏆 {winnerLifetimeWins} lifetime wins
+                  </span>
+                )}
                 <div className="flex flex-col gap-2 items-center">
                   <button
                     onClick={() => {
@@ -2000,6 +2396,21 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
+      )}
+      {showDebugOverlay && debugInfo && (
+        <div
+          className="fixed z-[9999] top-0 left-0 bg-black/85 text-lime-400 text-[10px] leading-tight font-mono p-2 pointer-events-none whitespace-pre"
+          style={{ paddingTop: "env(safe-area-inset-top)" }}
+        >
+          {`DEBUG (?debug=1)
+orientation: ${debugInfo.orientation}
+inner: ${debugInfo.innerW} x ${debugInfo.innerH}
+screen: ${debugInfo.screenW} x ${debugInfo.screenH}
+visualViewport: ${debugInfo.vvW} x ${debugInfo.vvH}
+dpr: ${debugInfo.dpr}  standalone: ${String(debugInfo.standalone)}
+safe-area top/right/bottom/left:
+  ${debugInfo.sat} / ${debugInfo.sar} / ${debugInfo.sab} / ${debugInfo.sal}`}
         </div>
       )}
     </div>

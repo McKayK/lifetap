@@ -5,17 +5,33 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
     />
     <meta name="HandheldFriendly" content="true" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
+    <!-- "black-fullscreen" isn't a real value for this tag (only
+         default/black/black-translucent are) — iOS falls back to its
+         opaque default status bar for unrecognized values, which is what
+         was pushing the whole app down (and off-screen in landscape,
+         where the reserved area is proportionally bigger) when launched
+         from the home screen. black-translucent + viewport-fit=cover lets
+         the app draw truly full-bleed under the notch/status bar/home
+         indicator instead of the OS reserving space for them. -->
     <meta
       name="apple-mobile-web-app-status-bar-style"
-      content="black-fullscreen"
+      content="black-translucent"
     />
     <meta name="theme-color" content="#0a0a0a" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- No <link rel="manifest"> here on purpose. debug.html (which has no
+         manifest at all) proved out clean on the iPad — no reserved bottom
+         space, real numbers match exactly — while every icon saved from
+         this page WITH a manifest link kept leaving a bottom bar no matter
+         what "display" value the manifest used. That points at iOS's
+         manifest-driven "Add to Home Screen" install path itself having a
+         bug on this iPadOS version, so we just don't use it: dropping the
+         manifest link falls back to the plain apple-mobile-web-app-* meta
+         tags above, the same well-established path debug.html used. -->
     <link rel="icon" type="image/png" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>MTG Lifetap Clone</title>

@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+html,
 body {
+  height: 100%;
   margin: 0;
   background-color: #0a0a0a;
   color: #ffffff;
@@ -20,4 +22,53 @@ body {
 * {
   -webkit-text-size-adjust: none;
   text-size-adjust: none;
+}
+
+/* Scrollable panels (drawer, modals, grids) still scroll normally — this
+   just hides the visible scrollbar track/thumb across browsers. */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge/IE */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, newer Edge */
+}
+
+/* Avoids only the status bar / notch — never the home indicator (bottom
+   stays flush with the screen edge on every device, as requested). This
+   uses the real env() values with no invented fallback numbers: the status
+   bar itself (not just a physical notch) is part of what iOS reports as
+   the safe area, so a plain iPad correctly gets real top clearance here
+   too, without needing a guessed-at floor. On iPhone in landscape the
+   notch rotates onto a side edge instead of the top, and
+   env(safe-area-inset-left/right) reports that automatically — so top
+   correctly collapses to ~0 there instead of leaving unclaimed padding. */
+.app-safe-top {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: 0px;
+  padding-left: env(safe-area-inset-left);
+}
+
+/* TEMPORARY — lets the ?debug=1 overlay (in App.jsx) read the actual
+   env(safe-area-inset-*) values via JS, since env() itself isn't directly
+   readable from getComputedStyle on an arbitrary property. Safe to delete
+   once the iPad viewport issue is resolved. */
+:root {
+  --debug-sat: env(safe-area-inset-top);
+  --debug-sar: env(safe-area-inset-right);
+  --debug-sab: env(safe-area-inset-bottom);
+  --debug-sal: env(safe-area-inset-left);
+}
+
+/* Forces its own GPU-composited layer. iOS Safari has a long-standing bug
+   where rounded-corner + overflow-hidden + image cards inside a scrolling
+   container visibly flicker/flash white during momentum scrolling, because
+   it keeps re-rastering them instead of compositing a cached layer. Promoting
+   each card to its own layer up front sidesteps that. */
+.gpu-layer {
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
