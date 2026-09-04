@@ -207,12 +207,15 @@ export default function App() {
   }, []);
 
   // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
-  // to see real viewport/safe-area numbers on screen. Safe to delete once
-  // the iPad standalone-mode layout issue is resolved.
+  // (or load it via /debug.html, which injects this same app without ever
+  // changing the address bar, so it survives Add to Home Screen) to see
+  // real viewport/safe-area numbers on screen. Safe to delete once the
+  // iPad standalone-mode layout issue is resolved.
   const [showDebugOverlay] = useState(
     () =>
       typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("debug") === "1",
+      (new URLSearchParams(window.location.search).get("debug") === "1" ||
+        window.location.pathname.endsWith("/debug.html")),
   );
   const [debugInfo, setDebugInfo] = useState(null);
   useEffect(() => {

@@ -12,9 +12,16 @@
          query string (like ?debug=1) you typed into the URL bar first. This
          page has no manifest at all, so Add to Home Screen falls back to the
          plain apple-mobile-web-app-* meta tags below (the classic, best
-         supported iOS home-screen-app path) and saves THIS exact URL. Once
-         launched, it immediately hands off to the real app with ?debug=1
-         still attached, inside the same standalone launch context. -->
+         supported iOS home-screen-app path) and saves THIS exact URL.
+
+         Earlier this page tried a client-side redirect (location.replace) to
+         "/?debug=1" — but that changes the address bar itself before you can
+         even open the Share sheet, so Add to Home Screen ends up saving the
+         manifest-linked page again, right back where we started. Instead,
+         this page fetches the real built app's script/style tags out of the
+         production index.html and injects them into ITSELF, so the real app
+         renders right here with the address bar staying on /debug.html the
+         entire time — nothing ever navigates. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -23,8 +30,36 @@
     <title>Lifetap Debug</title>
   </head>
   <body style="background: #0a0a0a; margin: 0">
+    <div id="root"></div>
     <script>
-      location.replace("/?debug=1");
+      // Pull the real built app's <link rel="stylesheet"> and
+      // <script type="module"> tags out of /index.html and load them here,
+      // instead of hardcoding hashed filenames that change every build.
+      fetch("/index.html")
+        .then((res) => res.text())
+        .then((html) => {
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          doc.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
+            const el = document.createElement("link");
+            el.rel = "stylesheet";
+            el.href = link.getAttribute("href");
+            document.head.appendChild(el);
+          });
+          const script = doc.querySelector('script[type="module"]');
+          if (script) {
+            const el = document.createElement("script");
+            el.type = "module";
+            el.src = script.getAttribute("src");
+            document.body.appendChild(el);
+          } else {
+            document.getElementById("root").textContent =
+              "Couldn't find the app's script tag in /index.html.";
+          }
+        })
+        .catch((err) => {
+          document.getElementById("root").textContent =
+            "Failed to load the app: " + err;
+        });
     </script>
   </body>
 </html>
