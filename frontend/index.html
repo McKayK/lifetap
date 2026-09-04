@@ -23,7 +23,15 @@
       content="black-translucent"
     />
     <meta name="theme-color" content="#0a0a0a" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- No <link rel="manifest"> here on purpose. debug.html (which has no
+         manifest at all) proved out clean on the iPad — no reserved bottom
+         space, real numbers match exactly — while every icon saved from
+         this page WITH a manifest link kept leaving a bottom bar no matter
+         what "display" value the manifest used. That points at iOS's
+         manifest-driven "Add to Home Screen" install path itself having a
+         bug on this iPadOS version, so we just don't use it: dropping the
+         manifest link falls back to the plain apple-mobile-web-app-* meta
+         tags above, the same well-established path debug.html used. -->
     <link rel="icon" type="image/png" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>MTG Lifetap Clone</title>
