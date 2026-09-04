@@ -21,3 +21,13 @@ body {
   -webkit-text-size-adjust: none;
   text-size-adjust: none;
 }
+
+/* Scrollable panels (drawer, modals, grids) still scroll normally — this
+   just hides the visible scrollbar track/thumb across browsers. */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge/IE */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, newer Edge */
+}

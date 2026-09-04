@@ -156,36 +156,17 @@ app.get("/api/players/:id/favorites", (req, res) => {
   );
 });
 
+// Saving a favorite from Scryfall search. Deduped on (player_id, scryfall_id)
+// — re-picking a printing the player already has favorited just hands back
+// the existing row instead of piling up another copy of it.
 app.post("/api/players/:id/favorites", (req, res) => {
   const { commander_name, image_url, scryfall_id } = req.body;
-  db.run(
-    "INSERT INTO favorites (player_id, commander_name, image_url, scryfall_id) VALUES (?, ?, ?, ?)",
-    [req.params.id, commander_name, image_url, scryfall_id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    },
-  );
-});
+  const playerId = req.params.id;
 
-// Direct multi-part file upload endpoint.
-// Wrapped manually so multer errors (bad type, too large) return clean JSON.
-app.post("/api/players/:id/upload-favorite", (req, res) => {
-  upload.single("image")(req, res, (err) => {
-    if (err) return res.status(400).json({ error: err.message });
-
-    const playerId = req.params.id;
-    const { commander_name } = req.body;
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-
-    // Stored as a RELATIVE path so the art keeps working no matter which
-    // domain or IP the app is accessed from later. The frontend prefixes
-    // the backend origin at render time.
-    const image_url = `/custom-art/${req.file.filename}`;
-
+  const insert = () => {
     db.run(
-      "INSERT INTO favorites (player_id, commander_name, image_url, scryfall_id) VALUES (?, ?, ?, 'custom')",
-      [playerId, commander_name, image_url],
+      "INSERT INTO favorites (player_id, commander_name, image_url, scryfall_id) VALUES (?, ?, ?, ?)",
+      [playerId, commander_name, image_url, scryfall_id],
       function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({
@@ -193,10 +174,109 @@ app.post("/api/players/:id/upload-favorite", (req, res) => {
           player_id: playerId,
           commander_name,
           image_url,
+          scryfall_id,
         });
       },
     );
+  };
+
+  if (scryfall_id) {
+    db.get(
+      "SELECT * FROM favorites WHERE player_id = ? AND scryfall_id = ?",
+      [playerId, scryfall_id],
+      (err, existing) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (existing) return res.json(existing);
+        insert();
+      },
+    );
+  } else {
+    insert();
+  }
+});
+
+// Direct multi-part file upload endpoint.
+// Wrapped manually so multer errors (bad type, too large) return clean JSON.
+// Deduped on (player_id, commander_name) case-insensitively — a player
+// can't upload two custom arts under the same commander name; delete the
+// existing favorite first if they want to replace it.
+app.post("/api/players/:id/upload-favorite", (req, res) => {
+  upload.single("image")(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+
+    const playerId = req.params.id;
+    const commander_name = (req.body.commander_name || "").trim();
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!commander_name) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: "Commander name is required" });
+    }
+
+    db.get(
+      "SELECT id FROM favorites WHERE player_id = ? AND scryfall_id = 'custom' AND commander_name = ? COLLATE NOCASE",
+      [playerId, commander_name],
+      (err, existing) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (existing) {
+          // Duplicate — discard the file we just accepted, nothing to keep it for.
+          fs.unlink(req.file.path, () => {});
+          return res.status(409).json({
+            error: `"${commander_name}" is already saved for this player. Delete the existing one first to replace its art.`,
+          });
+        }
+
+        // Stored as a RELATIVE path so the art keeps working no matter which
+        // domain or IP the app is accessed from later. The frontend prefixes
+        // the backend origin at render time.
+        const image_url = `/custom-art/${req.file.filename}`;
+
+        db.run(
+          "INSERT INTO favorites (player_id, commander_name, image_url, scryfall_id) VALUES (?, ?, ?, 'custom')",
+          [playerId, commander_name, image_url],
+          function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({
+              id: this.lastID,
+              player_id: playerId,
+              commander_name,
+              image_url,
+            });
+          },
+        );
+      },
+    );
   });
+});
+
+// Remove a favorite. Also deletes the uploaded file from disk when it was a
+// custom upload (image_url is our own relative /custom-art/... path, not an
+// external Scryfall URL) so art doesn't orphan on disk once its favorite is
+// gone.
+app.delete("/api/favorites/:id", (req, res) => {
+  db.get(
+    "SELECT * FROM favorites WHERE id = ?",
+    [req.params.id],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(404).json({ error: "Favorite not found" });
+
+      db.run(
+        "DELETE FROM favorites WHERE id = ?",
+        [req.params.id],
+        function (err) {
+          if (err) return res.status(500).json({ error: err.message });
+          if (row.image_url && row.image_url.startsWith("/custom-art/")) {
+            const filePath = path.join(
+              uploadDir,
+              path.basename(row.image_url),
+            );
+            fs.unlink(filePath, () => {}); // best-effort cleanup, ignore errors
+          }
+          res.json({ success: true });
+        },
+      );
+    },
+  );
 });
 
 // Log a game result. This is now THE act of recording a win — win totals
