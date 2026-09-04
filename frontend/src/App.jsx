@@ -761,7 +761,7 @@ export default function App() {
 
   return (
     <div
-      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-area gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
+      className={`fixed inset-0 grid bg-neutral-950 app-safe-area gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
@@ -1644,7 +1644,7 @@ export default function App() {
                         return (
                           <div
                             key={fav.id}
-                            className={`relative group aspect-[3/2] rounded-xl overflow-hidden border transition-all select-none ${
+                            className={`relative group w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border transition-all select-none ${
                               isArmed
                                 ? "border-red-500"
                                 : "border-neutral-800 hover:border-yellow-500"
@@ -1797,7 +1797,7 @@ export default function App() {
                             <button
                               key={print.id}
                               onClick={() => handleSelectCommander(print)}
-                              className="relative aspect-[3/2] rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group"
+                              className="relative w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group"
                             >
                               {img && (
                                 <img
@@ -1828,7 +1828,7 @@ export default function App() {
                               key={card.id}
                               disabled={isLoadingPrintings}
                               onClick={() => handleCardClick(card)}
-                              className="relative aspect-[3/2] rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group disabled:opacity-50"
+                              className="relative w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group disabled:opacity-50"
                             >
                               {img && (
                                 <img
