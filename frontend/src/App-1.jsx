@@ -210,6 +210,46 @@ export default function App() {
     return () => mq.removeEventListener("change", handleChange);
   }, []);
 
+  // iOS parks a home-screen web app at a NEGATIVE scroll offset after
+  // rotating into landscape on a notched iPhone: window.scrollY, and with it
+  // visualViewport.offsetTop, sit at -(notch inset) — measured at -62 here.
+  // A negative offset means the layout viewport starts 62px BELOW the visible
+  // area, so everything renders 62px too low and the bottom 62px is cut off.
+  // Nothing in CSS can see or correct this: safe-area insets all report 0, the
+  // container's padding is 0, and it hits position:fixed elements too, because
+  // fixed anchors to the layout viewport, not to what you can actually see.
+  // html/body being overflow:hidden is what makes it stick — there is nothing
+  // scrollable, so iOS never scrolls back and the offset is permanent for that
+  // orientation. Forcing the scroll position back to 0 is the only fix. iOS
+  // needs a few frames after the rotation settles before the reset takes, so
+  // this fires repeatedly rather than once.
+  useEffect(() => {
+    const pin = () => {
+      const off = window.visualViewport?.offsetTop ?? 0;
+      if (window.scrollY !== 0 || off !== 0) window.scrollTo(0, 0);
+    };
+    const repin = () => {
+      pin();
+      requestAnimationFrame(pin);
+      setTimeout(pin, 60);
+      setTimeout(pin, 250);
+      setTimeout(pin, 600);
+    };
+    repin();
+    window.addEventListener("orientationchange", repin);
+    window.addEventListener("resize", repin);
+    window.addEventListener("pageshow", repin);
+    window.visualViewport?.addEventListener("resize", repin);
+    window.visualViewport?.addEventListener("scroll", pin);
+    return () => {
+      window.removeEventListener("orientationchange", repin);
+      window.removeEventListener("resize", repin);
+      window.removeEventListener("pageshow", repin);
+      window.visualViewport?.removeEventListener("resize", repin);
+      window.visualViewport?.removeEventListener("scroll", pin);
+    };
+  }, []);
+
   // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
   // (or load it via /debug.html, which injects this same app without ever
   // changing the address bar, so it survives Add to Home Screen) to see
@@ -827,16 +867,7 @@ export default function App() {
   return (
     <div
       ref={rootRef}
-      /* position:fixed + inset-0 instead of h-dvh/w-screen in normal flow.
-         A fixed box is laid out against the viewport itself, so it cannot
-         inherit a document offset or a parked scroll position — which is
-         what was pushing the whole grid 62px down (and clipping its bottom
-         row) in landscape on the iPhone, even with padding at 0. inset-0
-         also means no height unit is involved at all, so the 100vh/100dvh
-         difference stops mattering. "relative" is dropped because "fixed"
-         already establishes the containing block the absolutely-positioned
-         tile children need. */
-      className={`fixed inset-0 grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
