@@ -31,3 +31,17 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none; /* Chrome, Safari, newer Edge */
 }
+
+/* iOS home-screen app safe area (notch / status bar / home indicator).
+   Applied to the app's own root element instead of body — that element is
+   sized with h-dvh/h-screen and (via Tailwind's border-box preflight) this
+   padding is carved out of that height rather than added on top of it, so
+   it can't push content past the bottom of the screen. In landscape the
+   notch sits on the left or right instead of the top, which is why this
+   matters there too, not just at the top. */
+.app-safe-area {
+  padding-top: calc(0.25rem + env(safe-area-inset-top));
+  padding-right: calc(0.25rem + env(safe-area-inset-right));
+  padding-bottom: calc(0.25rem + env(safe-area-inset-bottom));
+  padding-left: calc(0.25rem + env(safe-area-inset-left));
+}

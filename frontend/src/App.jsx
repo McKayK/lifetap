@@ -123,6 +123,20 @@ export default function App() {
   const pointerDownOnTapTarget = useRef({});
 
   const [lifeDeltas, setLifeDeltas] = useState({});
+  // Pending "clear this delta popup" timers, keyed by slot id — kept in a
+  // ref (not state) so scheduling/clearing them is a plain side effect
+  // instead of living inside the setLifeDeltas updater. Doing it inside the
+  // updater used to work in production but silently leaked an orphaned
+  // timer per tap in dev: React 18 Strict Mode intentionally calls state
+  // updater functions twice to catch exactly this kind of impurity (a
+  // function that schedules real timers as a side effect isn't safe to
+  // call twice), and the throwaway second call still scheduled a real
+  // setTimeout with no reference kept to cancel it — so ~5s after your
+  // *first* tap in a streak, that leaked timer would fire and wipe the
+  // popup regardless of how many times you'd tapped since, making it look
+  // like the count "restarted" mid-streak. Production builds don't run
+  // Strict Mode's double-invoke, which is why it only showed up in dev.
+  const lifeDeltaTimers = useRef({});
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -508,18 +522,24 @@ export default function App() {
   };
 
   const showLifeDelta = (id, amount) => {
+    // Side effects live here, in the event handler itself — NOT inside the
+    // setLifeDeltas updater below, which stays a pure function of its
+    // previous state so it's safe for React to call however many times it
+    // wants (see the note on lifeDeltaTimers above).
+    if (lifeDeltaTimers.current[id]) clearTimeout(lifeDeltaTimers.current[id]);
+    lifeDeltaTimers.current[id] = setTimeout(() => {
+      delete lifeDeltaTimers.current[id];
+      setLifeDeltas((p) => {
+        const next = { ...p };
+        delete next[id];
+        return next;
+      });
+    }, 5000);
+
     setLifeDeltas((prev) => {
       const existing = prev[id];
-      if (existing?.timeoutId) clearTimeout(existing.timeoutId);
       const newTotal = (existing?.amount ?? 0) + amount;
-      const timeoutId = setTimeout(() => {
-        setLifeDeltas((p) => {
-          const next = { ...p };
-          delete next[id];
-          return next;
-        });
-      }, 5000);
-      return { ...prev, [id]: { amount: newTotal, timeoutId } };
+      return { ...prev, [id]: { amount: newTotal } };
     });
   };
 
@@ -571,6 +591,8 @@ export default function App() {
     );
     setStartingPlayerId(null);
     setIsRolling(true);
+    Object.values(lifeDeltaTimers.current).forEach(clearTimeout);
+    lifeDeltaTimers.current = {};
     setLifeDeltas({});
     setMonarchSlotId(null);
     setInitiativeSlotId(null);
@@ -739,7 +761,7 @@ export default function App() {
 
   return (
     <div
-      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 p-1 gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-area gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
@@ -1059,7 +1081,6 @@ export default function App() {
                     </span>
                     {delta && (
                       <span
-                        key={delta.amount}
                         className={`absolute -top-8 text-2xl font-black tabular-nums pointer-events-none
                           ${delta.amount > 0 ? "text-green-400" : "text-red-400"}
                           animate-bounce`}
@@ -1636,16 +1657,52 @@ export default function App() {
                             // same forgiving pattern as the rest of the app's
                             // press-and-hold controls (no confirm() dialog
                             // needed, the gesture itself is the confirmation).
+                            // Also tracks how far the finger has moved since
+                            // pointerdown: scrolling this grid means dragging
+                            // across a card, and without this check that drag
+                            // was being misread as either a tap-to-select
+                            // (fast flick) or a long-press-to-arm (slow drag).
                             onPointerDown={(e) => {
                               favJustArmed.current = false;
+                              e.currentTarget.dataset.dragged = "";
+                              e.currentTarget.dataset.startX = e.clientX;
+                              e.currentTarget.dataset.startY = e.clientY;
                               const timer = setTimeout(() => {
                                 favJustArmed.current = true;
                                 setArmedDeleteFavId(fav.id);
                               }, 500);
                               e.currentTarget.dataset.timer = timer;
                             }}
+                            onPointerMove={(e) => {
+                              const startX = parseFloat(
+                                e.currentTarget.dataset.startX,
+                              );
+                              const startY = parseFloat(
+                                e.currentTarget.dataset.startY,
+                              );
+                              if (Number.isNaN(startX) || Number.isNaN(startY))
+                                return;
+                              const moved = Math.hypot(
+                                e.clientX - startX,
+                                e.clientY - startY,
+                              );
+                              if (moved > 10) {
+                                // The finger is scrolling the list, not
+                                // tapping or holding this card — cancel the
+                                // long-press arm and mark this gesture so the
+                                // eventual pointerUp is ignored.
+                                clearTimeout(
+                                  parseInt(e.currentTarget.dataset.timer),
+                                );
+                                e.currentTarget.dataset.dragged = "1";
+                              }
+                            }}
                             onPointerUp={(e) => {
                               clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                              if (e.currentTarget.dataset.dragged === "1") {
+                                favJustArmed.current = false;
+                                return;
+                              }
                               if (favJustArmed.current) {
                                 // Tail end of the long-press gesture that just
                                 // armed this card — not a new tap.
@@ -1667,7 +1724,7 @@ export default function App() {
                             <img
                               src={resolveArt(fav.image_url)}
                               alt={fav.commander_name}
-                              className="h-full w-full object-cover group-hover:scale-105 transition-all"
+                              className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
                             />
                             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
                             <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
@@ -1745,7 +1802,7 @@ export default function App() {
                               {img && (
                                 <img
                                   src={img}
-                                  className="h-full w-full object-cover group-hover:scale-105 transition-all"
+                                  className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
                                   alt={print.set_name || ""}
                                 />
                               )}
@@ -1776,7 +1833,7 @@ export default function App() {
                               {img && (
                                 <img
                                   src={img}
-                                  className="h-full w-full object-cover group-hover:scale-105 transition-all"
+                                  className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
                                   alt=""
                                 />
                               )}
