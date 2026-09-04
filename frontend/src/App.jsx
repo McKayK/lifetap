@@ -249,6 +249,17 @@ export default function App() {
         boxH: el ? el.offsetHeight : "?",
         contentH: el ? el.clientHeight : "?",
         scrollH: el ? el.scrollHeight : "?",
+        rectTop: el ? Math.round(el.getBoundingClientRect().top) : "?",
+        rectLeft: el ? Math.round(el.getBoundingClientRect().left) : "?",
+        bodyTop: Math.round(document.body.getBoundingClientRect().top),
+        htmlTop: Math.round(
+          document.documentElement.getBoundingClientRect().top,
+        ),
+        bodyH: document.body.offsetHeight,
+        htmlH: document.documentElement.offsetHeight,
+        scrollY: Math.round(window.scrollY),
+        vvTop: Math.round(window.visualViewport?.offsetTop ?? -1),
+        vvPage: Math.round(window.visualViewport?.pageTop ?? -1),
       });
     };
     readDebugInfo();
@@ -2428,7 +2439,11 @@ safe-area top/right/bottom/left:
 root padding T/R/B/L:
   ${debugInfo.padT} / ${debugInfo.padR} / ${debugInfo.padB} / ${debugInfo.padL}
 root box/content/scroll H:
-  ${debugInfo.boxH} / ${debugInfo.contentH} / ${debugInfo.scrollH}`}
+  ${debugInfo.boxH} / ${debugInfo.contentH} / ${debugInfo.scrollH}
+root rect top/left: ${debugInfo.rectTop} / ${debugInfo.rectLeft}
+body/html rect top: ${debugInfo.bodyTop} / ${debugInfo.htmlTop}
+body/html offsetH:  ${debugInfo.bodyH} / ${debugInfo.htmlH}
+scrollY ${debugInfo.scrollY}  vv offsetTop ${debugInfo.vvTop}  pageTop ${debugInfo.vvPage}`}
         </div>
       )}
     </div>
