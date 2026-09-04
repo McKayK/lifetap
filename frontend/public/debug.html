@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <!-- Deliberately NO <link rel="manifest"> here. index.html's manifest has
+         a fixed start_url ("/"), and iOS Add to Home Screen forces every save
+         of a manifest-linked page to that start_url, silently dropping any
+         query string (like ?debug=1) you typed into the URL bar first. This
+         page has no manifest at all, so Add to Home Screen falls back to the
+         plain apple-mobile-web-app-* meta tags below (the classic, best
+         supported iOS home-screen-app path) and saves THIS exact URL. Once
+         launched, it immediately hands off to the real app with ?debug=1
+         still attached, inside the same standalone launch context. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <title>Lifetap Debug</title>
+  </head>
+  <body style="background: #0a0a0a; margin: 0">
+    <script>
+      location.replace("/?debug=1");
+    </script>
+  </body>
+</html>
