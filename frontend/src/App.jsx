@@ -206,6 +206,44 @@ export default function App() {
     return () => mq.removeEventListener("change", handleChange);
   }, []);
 
+  // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
+  // to see real viewport/safe-area numbers on screen. Safe to delete once
+  // the iPad standalone-mode layout issue is resolved.
+  const [showDebugOverlay] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("debug") === "1",
+  );
+  const [debugInfo, setDebugInfo] = useState(null);
+  useEffect(() => {
+    if (!showDebugOverlay || typeof window === "undefined") return;
+    const readDebugInfo = () => {
+      const cs = getComputedStyle(document.documentElement);
+      setDebugInfo({
+        orientation: window.innerWidth >= window.innerHeight ? "landscape" : "portrait",
+        innerW: window.innerWidth,
+        innerH: window.innerHeight,
+        screenW: window.screen?.width,
+        screenH: window.screen?.height,
+        vvW: window.visualViewport?.width,
+        vvH: window.visualViewport?.height,
+        dpr: window.devicePixelRatio,
+        standalone: window.navigator?.standalone,
+        sat: cs.getPropertyValue("--debug-sat").trim(),
+        sar: cs.getPropertyValue("--debug-sar").trim(),
+        sab: cs.getPropertyValue("--debug-sab").trim(),
+        sal: cs.getPropertyValue("--debug-sal").trim(),
+      });
+    };
+    readDebugInfo();
+    window.addEventListener("resize", readDebugInfo);
+    window.addEventListener("orientationchange", readDebugInfo);
+    return () => {
+      window.removeEventListener("resize", readDebugInfo);
+      window.removeEventListener("orientationchange", readDebugInfo);
+    };
+  }, [showDebugOverlay]);
+
   // Configurable via .env (VITE_API_URL) so local dev doesn't require
   // editing source. Falls back to the production deployment.
   const BACKEND_URL =
@@ -761,7 +799,7 @@ export default function App() {
 
   return (
     <div
-      className={`fixed inset-0 grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
@@ -2355,6 +2393,21 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
+      )}
+      {showDebugOverlay && debugInfo && (
+        <div
+          className="fixed z-[9999] top-0 left-0 bg-black/85 text-lime-400 text-[10px] leading-tight font-mono p-2 pointer-events-none whitespace-pre"
+          style={{ paddingTop: "env(safe-area-inset-top)" }}
+        >
+          {`DEBUG (?debug=1)
+orientation: ${debugInfo.orientation}
+inner: ${debugInfo.innerW} x ${debugInfo.innerH}
+screen: ${debugInfo.screenW} x ${debugInfo.screenH}
+visualViewport: ${debugInfo.vvW} x ${debugInfo.vvH}
+dpr: ${debugInfo.dpr}  standalone: ${String(debugInfo.standalone)}
+safe-area top/right/bottom/left:
+  ${debugInfo.sat} / ${debugInfo.sar} / ${debugInfo.sab} / ${debugInfo.sal}`}
         </div>
       )}
     </div>
