@@ -210,6 +210,66 @@ export default function App() {
     return () => mq.removeEventListener("change", handleChange);
   }, []);
 
+  // iOS parks a home-screen web app at a NEGATIVE scroll offset after
+  // rotating into landscape on a notched iPhone: window.scrollY and
+  // visualViewport.offsetTop both sit at -(notch inset), measured at -62 here.
+  // The layout viewport starts 62px BELOW the visible area, so everything
+  // paints 62px too low and the bottom 62px is cut off. No CSS can see it —
+  // safe-area insets read 0, padding reads 0 — and position:fixed does not
+  // escape it either, because fixed anchors to the layout viewport, not to
+  // what you can see. html/body being overflow:hidden is what makes it stick:
+  // nothing is scrollable, so iOS never scrolls back.
+  //
+  // Calling scrollTo alone is NOT enough. It corrects the paint while leaving
+  // every hit region at the old offset, so taps land on the control above the
+  // one you touched and buttons only fire if you press 62px below them.
+  // Restoring scrollability around the reset and forcing a reflow on both
+  // sides of it makes iOS redo layout and hit testing together, so what you
+  // see and what you can touch agree.
+  useEffect(() => {
+    const unstick = () => {
+      const html = document.documentElement;
+      const body = document.body;
+      const prevHtml = html.style.overflow;
+      const prevBody = body.style.overflow;
+      // Briefly scrollable, so the scroll reset is a real one iOS honors.
+      html.style.overflow = "auto";
+      body.style.overflow = "auto";
+      void html.offsetHeight; // flush layout with the lock released
+      window.scrollTo(0, 0);
+      html.scrollTop = 0;
+      body.scrollTop = 0;
+      html.style.overflow = prevHtml;
+      body.style.overflow = prevBody;
+      void html.offsetHeight; // flush again with the lock restored
+    };
+    // Fires unconditionally rather than only when an offset is detected: the
+    // hit regions can be stale even once scrollY already reads 0.
+    const onRotate = () => {
+      unstick();
+      requestAnimationFrame(unstick);
+      setTimeout(unstick, 120);
+      setTimeout(unstick, 400);
+    };
+    const onViewportScroll = () => {
+      if (window.scrollY !== 0 || (window.visualViewport?.offsetTop ?? 0) !== 0)
+        unstick();
+    };
+    onRotate();
+    window.addEventListener("orientationchange", onRotate);
+    window.addEventListener("resize", onRotate);
+    window.addEventListener("pageshow", onRotate);
+    window.visualViewport?.addEventListener("resize", onRotate);
+    window.visualViewport?.addEventListener("scroll", onViewportScroll);
+    return () => {
+      window.removeEventListener("orientationchange", onRotate);
+      window.removeEventListener("resize", onRotate);
+      window.removeEventListener("pageshow", onRotate);
+      window.visualViewport?.removeEventListener("resize", onRotate);
+      window.visualViewport?.removeEventListener("scroll", onViewportScroll);
+    };
+  }, []);
+
   // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
   // (or load it via /debug.html, which injects this same app without ever
   // changing the address bar, so it survives Add to Home Screen) to see
@@ -827,16 +887,7 @@ export default function App() {
   return (
     <div
       ref={rootRef}
-      /* position:fixed + inset-0 instead of h-dvh/w-screen in normal flow.
-         A fixed box is laid out against the viewport itself, so it cannot
-         inherit a document offset or a parked scroll position — which is
-         what was pushing the whole grid 62px down (and clipping its bottom
-         row) in landscape on the iPhone, even with padding at 0. inset-0
-         also means no height unit is involved at all, so the 100vh/100dvh
-         difference stops mattering. "relative" is dropped because "fixed"
-         already establishes the containing block the absolutely-positioned
-         tile children need. */
-      className={`fixed inset-0 grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
