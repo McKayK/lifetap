@@ -34,6 +34,24 @@ body {
   display: none; /* Chrome, Safari, newer Edge */
 }
 
+/* Avoids only the status bar / notch — never the home indicator (bottom
+   stays flush with the screen edge on every device, as requested).
+   - top: iPads have no notch, so env(safe-area-inset-top) reports 0 there
+     even though the opaque battery/wifi/time bar still overlays the
+     content in standalone mode — the 20px floor stands in for that bar's
+     height so it's still avoided. Notched iPhones report a taller real
+     inset in portrait, which wins via max().
+   - left/right: on iPhone in LANDSCAPE the notch rotates onto a side edge
+     instead of the top, and env(safe-area-inset-left/right) reports that
+     automatically — no floor here, since a floor would also (wrongly) pad
+     the sides on notch-less iPads and on iPhone portrait. */
+.app-safe-top {
+  padding-top: max(20px, env(safe-area-inset-top));
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: 0px;
+  padding-left: env(safe-area-inset-left);
+}
+
 /* Forces its own GPU-composited layer. iOS Safari has a long-standing bug
    where rounded-corner + overflow-hidden + image cards inside a scrolling
    container visibly flicker/flash white during momentum scrolling, because

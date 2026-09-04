@@ -761,7 +761,7 @@ export default function App() {
 
   return (
     <div
-      className={`fixed inset-0 grid bg-neutral-950 p-1 gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
+      className={`fixed inset-0 grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white overflow-hidden ${getGridClasses()}`}
     >
       {/* 1. PLAYERS GRID LAYOUT */}
       {(() => {
