@@ -141,6 +141,20 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [playerFavorites, setPlayerFavorites] = useState([]);
+  // Which player the list in playerFavorites actually belongs to. Without
+  // this the list is anonymous, so a slow or failed fetch leaves the PREVIOUS
+  // seat's commander art on screen under the new seat's name.
+  const [favoritesPlayerId, setFavoritesPlayerId] = useState(null);
+  const [favoritesError, setFavoritesError] = useState(false);
+  // Monotonic request token — a response is only applied if it belongs to the
+  // most recent request, so two overlapping fetches can't resolve out of
+  // order and leave the loser's data on screen.
+  const favoritesReqRef = useRef(0);
+  // Same guard for the two Scryfall lookups. Lower stakes than favorites —
+  // the worst case is the wrong card's results rather than the wrong
+  // person's identity — but it is the same out-of-order-response bug.
+  const searchReqRef = useRef(0);
+  const printingsReqRef = useRef(0);
   // When a search result has more than one printing, this holds the list of
   // printings (each its own art) so the player can pick a specific one
   // instead of always getting whichever printing Scryfall returns first.
@@ -191,6 +205,8 @@ export default function App() {
   // tap that drops the last opponent to 0 never writes to the database.
   const [winner, setWinner] = useState(null);
   const [winConfirmed, setWinConfirmed] = useState(false);
+  const [savingWin, setSavingWin] = useState(false);
+  const [winError, setWinError] = useState(null);
   const autoWinTriggered = useRef(false);
 
   // A "short" viewport (landscape phone, mainly) doesn't have enough
@@ -416,12 +432,30 @@ export default function App() {
 
   const activeMenuPlayer = slots.find((s) => s.id === activeMenuSlot)?.player;
 
+  // Never render favorites that belong to a different player than the one the
+  // drawer is currently showing. Even if a future change reintroduces a race,
+  // the worst case becomes an empty grid rather than someone else's art.
+  const visibleFavorites =
+    activeMenuPlayer && favoritesPlayerId === activeMenuPlayer.id
+      ? playerFavorites
+      : [];
+
   // Depend on the player id, not the whole slots array — otherwise every
   // life tick while the menu is open refires this fetch.
   useEffect(() => {
     if (activeMenuSlot === null) return;
+    // Drop the previous seat's list and invalidate anything still in flight
+    // BEFORE fetching. Closing the drawer used to leave the old list intact
+    // (this effect returns early when activeMenuSlot is null), so reopening
+    // on a different seat showed the last player's commanders until the new
+    // request landed — and forever if it failed.
+    favoritesReqRef.current += 1;
+    setPlayerFavorites([]);
+    setFavoritesPlayerId(null);
+    setFavoritesError(false);
     if (activeMenuPlayer) fetchFavorites(activeMenuPlayer.id);
-    else setPlayerFavorites([]);
+    searchReqRef.current += 1;
+    printingsReqRef.current += 1;
     setSearchQuery("");
     setSearchResults([]);
     setPrintingsOptions(null);
@@ -432,12 +466,23 @@ export default function App() {
   }, [activeMenuSlot, activeMenuPlayer?.id]);
 
   const fetchFavorites = async (playerId) => {
+    const reqId = (favoritesReqRef.current += 1);
+    setFavoritesError(false);
     try {
       const res = await fetch(`${BACKEND_URL}/players/${playerId}/favorites`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      // A newer request started while this one was in flight — drop it.
+      if (reqId !== favoritesReqRef.current) return;
       setPlayerFavorites(data);
+      setFavoritesPlayerId(playerId);
     } catch (err) {
+      if (reqId !== favoritesReqRef.current) return;
       console.error("Error fetching favorites:", err);
+      // Fail visibly and empty rather than silently leaving stale art up.
+      setPlayerFavorites([]);
+      setFavoritesPlayerId(playerId);
+      setFavoritesError(true);
     }
   };
 
@@ -523,24 +568,33 @@ export default function App() {
   const handleScryfallSearch = async (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
+    const reqId = (searchReqRef.current += 1);
     setIsSearching(true);
     try {
       const res = await fetch(
         `https://api.scryfall.com/cards/search?q=is:commander+name:${encodeURIComponent(searchQuery.trim())}`,
       );
       const data = await res.json();
-      if (data.data) setSearchResults(data.data);
-      else setSearchResults([]);
+      if (reqId !== searchReqRef.current) return; // superseded
+      setSearchResults(data.data || []);
     } catch (err) {
+      if (reqId !== searchReqRef.current) return;
       console.error("Scryfall search error:", err);
+      setSearchResults([]); // don't leave the previous query's hits up
     } finally {
-      setIsSearching(false);
+      // Only the newest request owns the spinner.
+      if (reqId === searchReqRef.current) setIsSearching(false);
     }
   };
 
   const handleSelectCommander = async (card) => {
     const currentSlot = slots.find((s) => s.id === activeMenuSlot);
     if (!currentSlot || !currentSlot.player) return;
+    // Pin the seat now. The favorite is POSTed against currentSlot.player,
+    // but the slot update below used to read activeMenuSlot again AFTER the
+    // await — so switching seats mid-save wrote the art onto whichever seat
+    // was open by then, while the favorite went to the original player.
+    const targetSlotId = currentSlot.id;
 
     const image_url =
       card.image_uris?.art_crop ||
@@ -563,13 +617,14 @@ export default function App() {
       });
       setSlots((prev) =>
         prev.map((s) =>
-          s.id === activeMenuSlot
+          s.id === targetSlotId
             ? { ...s, bgImage: image_url, commanderName: card.name }
             : s,
         ),
       );
       setPrintingsOptions(null);
-      setActiveMenuSlot(null);
+      // Only close the drawer if it is still showing the seat we just saved.
+      setActiveMenuSlot((cur) => (cur === targetSlotId ? null : cur));
     } catch (err) {
       console.error("Error saving favorite:", err);
     }
@@ -580,12 +635,14 @@ export default function App() {
   // pick which one instead of always saving whichever art Scryfall's
   // default search happened to return.
   const handleCardClick = async (card) => {
+    const reqId = (printingsReqRef.current += 1);
     setIsLoadingPrintings(true);
     try {
       const res = await fetch(
         `https://api.scryfall.com/cards/search?q=${encodeURIComponent(`!"${card.name}"`)}&unique=prints&order=released`,
       );
       const data = await res.json();
+      if (reqId !== printingsReqRef.current) return; // superseded
       const prints = (data.data || []).filter(
         (c) =>
           c.image_uris?.art_crop || c.card_faces?.[0]?.image_uris?.art_crop,
@@ -597,10 +654,11 @@ export default function App() {
         handleSelectCommander(card);
       }
     } catch (err) {
+      if (reqId !== printingsReqRef.current) return;
       console.error("Error fetching printings:", err);
       handleSelectCommander(card); // fall back to saving the original result
     } finally {
-      setIsLoadingPrintings(false);
+      if (reqId === printingsReqRef.current) setIsLoadingPrintings(false);
     }
   };
 
@@ -750,30 +808,53 @@ export default function App() {
   // games table server-side, so there's no separate counter to bump (and no
   // way for the two to double-count or drift).
   const confirmWin = async () => {
-    if (!winner) return;
+    if (!winner || savingWin) return;
     if (!winner.player) {
       // This seat never had a profile linked, so there's nothing to record
       // a win against — just acknowledge it so the game can move on.
       setWinConfirmed(true);
       return;
     }
+    // Capture the seat now: the awaits below give the pod time to change
+    // underneath us, and this row must describe the game that was actually won.
+    const w = winner;
+    setSavingWin(true);
+    setWinError(null);
     try {
       const res = await fetch(`${BACKEND_URL}/games`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          winner_id: winner.player.id,
-          winner_name: winner.player.name,
+          winner_id: w.player.id,
+          winner_name: w.player.name,
           player_count: playerCount,
         }),
       });
-      if (res.ok) {
-        await fetchGameHistory();
-        await fetchPlayers();
-        setWinConfirmed(true);
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.error) detail = body.error;
+        } catch {
+          /* non-JSON error body — the status is enough */
+        }
+        throw new Error(detail);
       }
+      // Confirm as soon as the row exists. Previously the refreshes below were
+      // awaited FIRST, so a hiccup fetching history or players threw, the
+      // screen stayed on "Victory?", and tapping again logged the same win a
+      // second time. The refreshes are best-effort; the insert is what counts.
+      setWinConfirmed(true);
+      fetchGameHistory();
+      fetchPlayers();
     } catch (err) {
+      // This used to fail completely silently: the button showed its pressed
+      // animation, nothing changed, and the only trace was a console message
+      // no one can see on an iPad. Surface it and let them retry.
       console.error("Error recording match win:", err);
+      setWinError(err?.message || "Couldn't reach the server");
+    } finally {
+      setSavingWin(false);
     }
   };
 
@@ -783,6 +864,8 @@ export default function App() {
     autoWinTriggered.current = true;
     setWinner(slot);
     setWinConfirmed(false);
+    setWinError(null);
+    setSavingWin(false);
     setActiveMenuSlot(null);
   };
 
@@ -1759,13 +1842,15 @@ export default function App() {
 
                 {drawerTab === "favorites" && (
                   <div>
-                  {playerFavorites.length === 0 ? (
+                  {visibleFavorites.length === 0 ? (
                     <p className="text-xs text-neutral-600 italic py-1">
-                      No favorited commanders yet.
+                      {favoritesError
+                        ? "Couldn't load this player's commanders — reopen to retry."
+                        : "No favorited commanders yet."}
                     </p>
                   ) : (
                     <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
-                      {playerFavorites.map((fav) => {
+                      {visibleFavorites.map((fav) => {
                         const isArmed = armedDeleteFavId === fav.id;
                         return (
                           <div
@@ -2462,10 +2547,16 @@ export default function App() {
               <div className="flex flex-col gap-2 items-center">
                 <button
                   onClick={confirmWin}
-                  className="px-8 py-3 bg-amber-600 hover:bg-amber-500 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
+                  disabled={savingWin}
+                  className="px-8 py-3 bg-amber-600 hover:bg-amber-500 disabled:bg-amber-800 disabled:opacity-70 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
                 >
-                  Confirm Win 🏆
+                  {savingWin ? "Recording…" : "Confirm Win 🏆"}
                 </button>
+                {winError && (
+                  <span className="max-w-xs text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-4 py-1.5 rounded-xl">
+                    Couldn't record the win: {winError}. Tap Confirm to retry.
+                  </span>
+                )}
                 <button
                   onClick={() => {
                     // Cancel without recording anything. autoWinTriggered

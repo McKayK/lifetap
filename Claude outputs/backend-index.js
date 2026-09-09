@@ -90,7 +90,7 @@ db.serialize(() => {
 const dbFail = (res, err) => {
   const r = res.req;
   console.error(`[500] ${r?.method} ${r?.originalUrl} — ${err.message}`);
-  return dbFail(res, err);
+  return res.status(500).json({ error: err.message });
 };
 
 // --- API ENDPOINTS ---
