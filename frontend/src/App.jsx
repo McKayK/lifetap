@@ -17,50 +17,97 @@ import {
 
 // ---------------------------------------------------------------------------
 // TABLE LAYOUTS — the single source of truth for where each seat physically
-// sits on the device. row/col/span describe the seat's cell in the main grid,
-// rotated marks seats whose tiles render upside-down (players across the
-// table). The commander damage mini-grid and popup both derive their box
-// positions from this, so they always mirror the actual table.
+// sits on the device. row/col/span describe the seat's cell in the main grid.
+// `orient` is how far that seat's tile is turned CLOCKWISE so it reads
+// right-side-up for the person sitting there:
+//
+//     0   = sitting at the near edge (tile upright)
+//    90   = sitting along the LEFT edge   (top of the text points screen-right)
+//   180   = sitting across the table      (tile upside-down)
+//   270   = sitting along the RIGHT edge  (top of the text points screen-left)
+//
+// This replaced a `rotated` boolean, which could only express 0 and 180 — not
+// enough for a 5-player table, where four people sit along the two long edges
+// and the fifth sits at the end. The commander damage mini-grid derives its
+// box positions from this too, so it always mirrors the real table.
 // ---------------------------------------------------------------------------
 const TABLE_LAYOUTS = {
   2: {
     rows: 2,
     cols: 1,
     cells: [
-      { row: 0, col: 0, span: 1, rotated: true },
-      { row: 1, col: 0, span: 1, rotated: false },
+      { row: 0, col: 0, span: 1, orient: 180 },
+      { row: 1, col: 0, span: 1, orient: 0 },
     ],
   },
   3: {
     rows: 2,
     cols: 2,
     cells: [
-      { row: 0, col: 0, span: 1, rotated: true },
-      { row: 0, col: 1, span: 1, rotated: true },
-      { row: 1, col: 0, span: 2, rotated: false },
+      { row: 0, col: 0, span: 1, orient: 180 },
+      { row: 0, col: 1, span: 1, orient: 180 },
+      { row: 1, col: 0, span: 2, orient: 0 },
     ],
   },
   4: {
     rows: 2,
     cols: 2,
     cells: [
-      { row: 0, col: 0, span: 1, rotated: true },
-      { row: 0, col: 1, span: 1, rotated: true },
-      { row: 1, col: 0, span: 1, rotated: false },
-      { row: 1, col: 1, span: 1, rotated: false },
+      { row: 0, col: 0, span: 1, orient: 180 },
+      { row: 0, col: 1, span: 1, orient: 180 },
+      { row: 1, col: 0, span: 1, orient: 0 },
+      { row: 1, col: 1, span: 1, orient: 0 },
     ],
   },
+  // Four players along the long edges facing each other, one at the end —
+  // NOT two across the top and three along the bottom, which is what the old
+  // all-180 version assumed.
   5: {
     rows: 3,
     cols: 2,
     cells: [
-      { row: 0, col: 0, span: 1, rotated: true },
-      { row: 0, col: 1, span: 1, rotated: true },
-      { row: 1, col: 0, span: 1, rotated: false },
-      { row: 1, col: 1, span: 1, rotated: false },
-      { row: 2, col: 0, span: 2, rotated: false },
+      { row: 0, col: 0, span: 1, orient: 90 },
+      { row: 0, col: 1, span: 1, orient: 270 },
+      { row: 1, col: 0, span: 1, orient: 90 },
+      { row: 1, col: 1, span: 1, orient: 270 },
+      { row: 2, col: 0, span: 2, orient: 0 },
     ],
   },
+};
+
+// A tile's own box is always its grid cell, but a SIDE seat's content has to
+// be laid out in a box with width and height swapped before it is turned:
+// rotating a div spins its pixels without changing its layout box, so a
+// 384x280 tile would still lay out content as 384x280 and then overflow once
+// rotated. Container query units read the tile's own dimensions, so this
+// needs no measurement in JS (Safari 16+, which the table iPad is on).
+const seatContentStyle = (orient) => {
+  switch (orient) {
+    case 90:
+      return {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100cqh",
+        height: "100cqw",
+        transformOrigin: "0 0",
+        transform: "rotate(90deg) translateY(-100%)",
+      };
+    case 270:
+      return {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100cqh",
+        height: "100cqw",
+        transformOrigin: "0 0",
+        transform: "rotate(-90deg) translateX(-100%)",
+      };
+    case 180:
+      return { position: "absolute", inset: 0, transform: "rotate(180deg)" };
+    default:
+      return { position: "absolute", inset: 0 };
+  }
 };
 
 // Where should seat `seatIndex`'s box be placed inside a grid that belongs to
@@ -80,16 +127,58 @@ const NEON_PALETTE = [
   { glow1: "#ffea00", glow2: "#00e5ff" }, // yellow / cyan
 ];
 
+// Where does seat `seatIndex`'s box go inside the mini-grid drawn on the tile
+// belonging to the viewer at `viewerIndex`? That tile is rotated by the
+// viewer's orient, so we place each box at the position which, once the CSS
+// rotation is applied, lands where that person actually sits.
+//
+// A quarter turn TRANSPOSES the grid: a 3-row x 2-col table is 2 rows x 3 cols
+// to someone sitting along the side, and a seat that spans two columns at the
+// end of the table spans two ROWS from there. That's why this returns grid
+// dimensions and both span axes rather than just a row/col pair.
 const getSeatCell = (playerCount, seatIndex, viewerIndex) => {
   const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
-  const cell = layout.cells[seatIndex];
-  const viewerRotated = layout.cells[viewerIndex]?.rotated;
-  if (!viewerRotated) return cell;
-  return {
-    ...cell,
-    row: layout.rows - 1 - cell.row,
-    col: layout.cols - 1 - cell.col - (cell.span - 1),
-  };
+  const { row: R, col: C, span } = layout.cells[seatIndex];
+  const { rows, cols } = layout;
+  const orient = layout.cells[viewerIndex]?.orient || 0;
+  switch (orient) {
+    case 180:
+      return {
+        row: rows - 1 - R,
+        col: cols - 1 - C - (span - 1),
+        rowSpan: 1,
+        colSpan: span,
+        gridRows: rows,
+        gridCols: cols,
+      };
+    case 90:
+      return {
+        row: cols - span - C,
+        col: R,
+        rowSpan: span,
+        colSpan: 1,
+        gridRows: cols,
+        gridCols: rows,
+      };
+    case 270:
+      return {
+        row: C,
+        col: rows - 1 - R,
+        rowSpan: span,
+        colSpan: 1,
+        gridRows: cols,
+        gridCols: rows,
+      };
+    default:
+      return {
+        row: R,
+        col: C,
+        rowSpan: 1,
+        colSpan: span,
+        gridRows: rows,
+        gridCols: cols,
+      };
+  }
 };
 
 export default function App() {
@@ -108,6 +197,13 @@ export default function App() {
 
   const [playerCount, setPlayerCount] = useState(4);
   const [startingLife, setStartingLife] = useState(40);
+  // "ffa" | "2hg" | "archenemy". Team modes share ONE life pool per team;
+  // commander damage stays per player, which is what the rules want and what
+  // slot.commanderDamage already models — a seat tracks damage from each
+  // other seat individually, so nothing there needed changing.
+  const [gameMode, setGameMode] = useState("ffa");
+  // Which seat is alone against everyone else in Archenemy.
+  const [archenemySlotId, setArchenemySlotId] = useState(1);
   const [dbPlayers, setDbPlayers] = useState([]);
   const [activeMenuSlot, setActiveMenuSlot] = useState(null);
   const [newPlayerName, setNewPlayerName] = useState("");
@@ -371,10 +467,65 @@ export default function App() {
   // Lethal commander damage — only counts opponents actually in the current
   // pod, so shrinking the pod size mid-game can't kill someone with damage
   // from a now-hidden seat.
+  // Which life pool a seat drinks from. null = its own (free-for-all).
+  // 2HG pairs the two seats on each side of the table: in the 4-player
+  // layout seats 1+2 sit across the top and 3+4 along the bottom, so
+  // teammates are side by side and opponents face them, which is how the
+  // table is actually arranged.
+  const teamKey = (slotId) => {
+    if (gameMode === "2hg") return slotId <= 2 ? "A" : "B";
+    if (gameMode === "archenemy")
+      return slotId === archenemySlotId ? "AE" : "HEROES";
+    return null;
+  };
+
+  // Every seat sharing this seat's pool, itself included. In free-for-all
+  // that's just the seat.
+  const teamMates = (slotId) => {
+    const key = teamKey(slotId);
+    if (!key) return [slotId];
+    return [1, 2, 3, 4, 5]
+      .slice(0, playerCount)
+      .filter((id) => teamKey(id) === key);
+  };
+
+  const isTeamGame = gameMode !== "ffa";
+
+  // Two seats on the same team. Commander damage between them is not a
+  // thing: they're not opponents, and because they also share a life pool,
+  // letting a partner's commander "hit" you would drain your own team.
+  const areAllies = (aId, bId) => {
+    if (aId === bId) return false;
+    const key = teamKey(aId);
+    return !!key && key === teamKey(bId);
+  };
+
   const isLethalCmd = (slot) =>
     Object.entries(slot.commanderDamage).some(
-      ([oppId, dmg]) => Number(oppId) <= playerCount && dmg >= 21,
+      ([oppId, dmg]) =>
+        Number(oppId) <= playerCount &&
+        dmg >= 21 &&
+        !areAllies(slot.id, Number(oppId)),
     );
+
+
+  // A seat is out when its POOL is empty, or when anyone drinking from that
+  // pool has taken 21 from a single commander — a team shares a life total,
+  // so it shares a defeat.
+  const seatIsOut = (list, slot) =>
+    teamMates(slot.id).some((id) => {
+      const mate = list.find((s) => s.id === id);
+      return mate && (mate.life <= 0 || isLethalCmd(mate));
+    });
+
+  // Writes a life value to every seat on the pool at once, so each teammate's
+  // tile shows the same number and any of them can spend it.
+  const writeTeamLife = (list, slotId, nextLife) => {
+    const mates = teamMates(slotId);
+    return list.map((s) =>
+      mates.includes(s.id) ? { ...s, life: nextLife } : s,
+    );
+  };
 
   const fetchGameHistory = async () => {
     try {
@@ -727,9 +878,11 @@ export default function App() {
   };
 
   const updateLife = (id, amount) => {
-    setSlots((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, life: s.life + amount } : s)),
-    );
+    setSlots((prev) => {
+      const cur = prev.find((s) => s.id === id);
+      if (!cur) return prev;
+      return writeTeamLife(prev, id, cur.life + amount);
+    });
   };
 
   const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
@@ -737,26 +890,37 @@ export default function App() {
     // decrementing damage that's already 0 can't hand out free life.
     const target = slots.find((s) => s.id === targetSlotId);
     if (!target) return;
+    // Belt and braces: the UI no longer offers a teammate as a source, but
+    // never let one through here either — it would drain the shared pool.
+    if (areAllies(targetSlotId, opponentSlotId)) return;
     const current = target.commanderDamage[opponentSlotId] || 0;
     const newDamage = Math.max(0, current + amount);
     const applied = newDamage - current;
     if (applied === 0) return;
 
+    // Commander damage also drains life, and in a team game that life comes
+    // out of the shared pool — so the damage lands on one player but the
+    // life comes off both teammates' tiles.
+    const nextLife = target.life - applied;
+    const mates = teamMates(targetSlotId);
     setSlots((prev) =>
       prev.map((s) => {
-        if (s.id !== targetSlotId) return s;
-        const newCmd = { ...s.commanderDamage, [opponentSlotId]: newDamage };
-        // Recompute the killer from scratch: set it when a source crosses 21,
-        // clear or reassign it if damage is ticked back below lethal.
-        const lethalEntry = Object.entries(newCmd).find(
-          ([oppId, dmg]) => Number(oppId) <= playerCount && dmg >= 21,
-        );
-        return {
-          ...s,
-          life: s.life - applied,
-          commanderDamage: newCmd,
-          killedBySlotId: lethalEntry ? Number(lethalEntry[0]) : null,
-        };
+        let next = s;
+        if (s.id === targetSlotId) {
+          const newCmd = { ...s.commanderDamage, [opponentSlotId]: newDamage };
+          // Recompute the killer from scratch: set it when a source crosses
+          // 21, clear or reassign it if damage is ticked back below lethal.
+          const lethalEntry = Object.entries(newCmd).find(
+            ([oppId, dmg]) => Number(oppId) <= playerCount && dmg >= 21,
+          );
+          next = {
+            ...next,
+            commanderDamage: newCmd,
+            killedBySlotId: lethalEntry ? Number(lethalEntry[0]) : null,
+          };
+        }
+        if (mates.includes(s.id)) next = { ...next, life: nextLife };
+        return next;
       }),
     );
     showLifeDelta(targetSlotId, -applied);
@@ -809,6 +973,13 @@ export default function App() {
   // way for the two to double-count or drift).
   const confirmWin = async () => {
     if (!winner || savingWin) return;
+    if (isTeamGame) {
+      // Deliberately not recorded: the games table stores a single winner_id,
+      // and team results don't fit it. Acknowledge the win so the game can
+      // move on without writing anything.
+      setWinConfirmed(true);
+      return;
+    }
     if (!winner.player) {
       // This seat never had a profile linked, so there's nothing to record
       // a win against — just acknowledge it so the game can move on.
@@ -878,13 +1049,19 @@ export default function App() {
   useEffect(() => {
     const currentVisible = slots.slice(0, playerCount);
     if (currentVisible.length < 2) return;
-    const alive = currentVisible.filter((s) => s.life > 0 && !isLethalCmd(s));
-    if (alive.length === 1 && !autoWinTriggered.current) {
+    const alive = currentVisible.filter((s) => !seatIsOut(currentVisible, s));
+    // The game ends when one TEAM is left, not one player — in 2HG two
+    // survivors on the same side is a win, and in free-for-all every seat is
+    // its own team so this behaves exactly as it did before.
+    const aliveTeams = new Set(
+      alive.map((s) => teamKey(s.id) || `solo-${s.id}`),
+    );
+    if (aliveTeams.size === 1 && alive.length > 0 && !autoWinTriggered.current) {
       openWinScreen(alive[0]);
-    } else if (alive.length > 1 && autoWinTriggered.current && !winner) {
+    } else if (aliveTeams.size > 1 && autoWinTriggered.current && !winner) {
       autoWinTriggered.current = false;
     }
-  }, [slots, playerCount, winner]);
+  }, [slots, playerCount, winner, gameMode, archenemySlotId]);
 
   // Random neon color per elimination, assigned once when a seat goes down
   // and cleared again once they're back above 0 — so it stays stable while
@@ -897,7 +1074,7 @@ export default function App() {
       let changed = false;
       const next = { ...prev };
       for (const s of currentVisible) {
-        const dead = s.life <= 0 || isLethalCmd(s);
+        const dead = seatIsOut(currentVisible, s);
         if (dead && !next[s.id]) {
           next[s.id] =
             NEON_PALETTE[Math.floor(Math.random() * NEON_PALETTE.length)];
@@ -950,8 +1127,6 @@ export default function App() {
     return "grid-cols-2 grid-rows-2";
   };
 
-  const lowHealthThreshold = Math.ceil(startingLife * 0.35);
-
   // Stats derived from history + players
   const podBreakdown = gameHistory.reduce((acc, g) => {
     acc[g.player_count] = (acc[g.player_count] || 0) + 1;
@@ -986,18 +1161,22 @@ export default function App() {
         // number/controls get counter-rotated to match THIS, not their own
         // native orientation, so they read right-side-up for whoever is
         // actually looking at them right now.
-        const cmdViewerRotated = cmdViewerSlot
-          ? !!layout.cells[cmdViewerIndex]?.rotated
-          : false;
+        const cmdViewerOrient = cmdViewerSlot
+          ? layout.cells[cmdViewerIndex]?.orient || 0
+          : 0;
         return visibleSlots.map((slot, index) => {
         const seat = layout.cells[index];
-        const isRotated = seat.rotated;
+        const seatOrient = seat.orient || 0;
+        // A side seat sees the table transposed, so its mini-grid has the
+        // table's ROW count as its column count.
+        const quarterTurned = seatOrient === 90 || seatOrient === 270;
+        const miniCols = quarterTurned ? layout.rows : layout.cols;
         const isSpannedRow = seat.span === 2;
         const displayName = slot.player ? slot.player.name : slot.label;
         const isStartingPlayer = startingPlayerId === slot.id;
 
         const lethalCommanderDamage = isLethalCmd(slot);
-        const isDefeated = slot.life <= 0 || lethalCommanderDamage;
+        const isDefeated = seatIsOut(visibleSlots, slot);
         // Commander-damage mode takes over every tile at once, so a defeat
         // overlay popping up mid-edit would just be in the way — suppress
         // it for the duration.
@@ -1008,27 +1187,48 @@ export default function App() {
         // tile puts every OTHER tile into "how much damage has this player
         // dealt to the viewer" mode, in place — no separate popup needed.
         const isCmdViewerTile = cmdViewerSlot && slot.id === cmdViewerSlot.id;
-        const isCmdTargetTile = cmdViewerSlot && !isCmdViewerTile;
+        const isCmdTargetTile =
+          cmdViewerSlot &&
+          !isCmdViewerTile &&
+          !areAllies(cmdViewerSlot.id, slot.id);
         const cmdAmt = isCmdTargetTile
           ? cmdViewerSlot.commanderDamage[slot.id] || 0
           : 0;
         // This tile's own seat orientation differs from the viewer's, so
         // its damage number/controls need an extra local flip to read
         // right-side-up for the person actually looking at them.
-        const cmdNeedsCounterRotate =
-          isCmdTargetTile && seat.rotated !== cmdViewerRotated;
+        // How far this tile's contents must turn, on top of their own seat
+        // rotation, to read right-side-up for whoever is entering damage.
+        const cmdDelta = isCmdTargetTile
+          ? (((cmdViewerOrient - seatOrient) % 360) + 360) % 360
+          : 0;
 
         const delta = lifeDeltas[slot.id];
 
         return (
           <div
             key={slot.id}
-            className={`relative flex flex-col items-center justify-center rounded-2xl overflow-hidden border transition-all duration-500 bg-neutral-900 ${
+            // container-type lets the rotation layer below size itself in
+            // cqw/cqh, i.e. this tile's own width and height.
+            style={{ containerType: "size" }}
+            className={`relative rounded-2xl overflow-hidden border transition-all duration-500 bg-neutral-900 ${
               isStartingPlayer
                 ? "border-yellow-500 shadow-[inset_0_0_20px_rgba(234,179,8,0.15)]"
                 : "border-neutral-800"
-            } ${isRotated ? "rotate-180" : ""} ${isSpannedRow ? "col-span-2" : ""}`}
+            } ${isSpannedRow ? "col-span-2" : ""}`}
           >
+            {/* Seat rotation layer. The tile itself never turns, so its
+                border, rounding and grid cell stay put; only the contents
+                rotate to face whoever is sitting there. It is its own
+                container too, so anything nested that needs a further turn
+                (commander damage entry) can size against THIS box. */}
+            <div
+              className="flex flex-col items-center justify-center"
+              style={{
+                ...seatContentStyle(seatOrient),
+                containerType: "size",
+              }}
+            >
             {/* Background Art */}
             {slot.bgImage && (
               <div
@@ -1042,24 +1242,20 @@ export default function App() {
               />
             )}
 
-            {/* Overshield overlay — only once a player is meaningfully
-                overhealed (10+ above starting life), not the moment they
-                tick one point over. */}
-            {slot.life > startingLife + 10 && (
-              <div className="absolute inset-0 z-[1] pointer-events-none bg-emerald-400 animate-overshield rounded-2xl" />
-            )}
-
-            {/* Low health overlay (scales with starting life) */}
-            {slot.life <= lowHealthThreshold && slot.life > 0 && (
-              <div className="absolute inset-0 z-[1] pointer-events-none bg-red-600 animate-heartbeat rounded-2xl" />
-            )}
+            {/* Overshield / low-health tints removed — the pulsing overlays
+                were distracting at the table. Their keyframes stay defined in
+                tailwind.config.js in case they ever come back behind a
+                setting. Do NOT name the utility classes here: Tailwind scans
+                comments too, and naming them puts the dead CSS back in the
+                bundle. */}
 
             {isCmdTargetTile ? (
               // Commander-damage entry for this opponent, in place of their
               // normal life tap zones: tap = +1, long-press arms a -/+
               // split (same interaction the old popup used).
               <div
-                className={`absolute inset-0 flex touch-none ${cmdNeedsCounterRotate ? "rotate-180" : ""}`}
+                className="flex touch-none"
+                style={seatContentStyle(cmdDelta)}
               >
                 {editingCmdSlot === slot.id ? (
                   <>
@@ -1248,7 +1444,10 @@ export default function App() {
               <div className="flex flex-col items-center justify-center my-auto relative gap-1">
                 {isCmdTargetTile ? (
                   <div
-                    className={`flex flex-col items-center gap-1 ${cmdNeedsCounterRotate ? "rotate-180" : ""}`}
+                    className="flex flex-col items-center gap-1"
+                    style={
+                      cmdDelta ? { transform: `rotate(${cmdDelta}deg)` } : undefined
+                    }
                   >
                     <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400 bg-black/40 px-2 py-0.5 rounded-full">
                       Dealt to {getShortName(cmdViewerSlot)}
@@ -1315,16 +1514,21 @@ export default function App() {
                     }}
                     className={`grid bg-black/40 rounded-xl border border-neutral-800/60 ${isCompact ? "gap-0.5 p-0.5" : "gap-1 p-1"}`}
                     style={{
-                      gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
+                      gridTemplateColumns: `repeat(${miniCols}, minmax(0, 1fr))`,
                     }}
                   >
                     {visibleSlots.map((opp, oppIndex) => {
                       const cell = getSeatCell(playerCount, oppIndex, index);
                       const cellStyle = {
-                        gridRow: cell.row + 1,
-                        gridColumn: `${cell.col + 1} / span ${cell.span}`,
+                        gridRow: `${cell.row + 1} / span ${cell.rowSpan}`,
+                        gridColumn: `${cell.col + 1} / span ${cell.colSpan}`,
                       };
-                      if (opp.id === slot.id) {
+                      // Own seat, or a teammate's — neither can deal you
+                      // commander damage, so both render as inert labels
+                      // rather than a counter you could tap up by mistake.
+                      const isSelfBox = opp.id === slot.id;
+                      const isAllyBox = areAllies(slot.id, opp.id);
+                      if (isSelfBox || isAllyBox) {
                         return (
                           <div
                             key={`self-${opp.id}`}
@@ -1339,7 +1543,7 @@ export default function App() {
                             <span
                               className={`font-black text-neutral-600 uppercase tracking-widest ${isCompact ? "text-[8px]" : "text-[10px]"}`}
                             >
-                              ME
+                              {isSelfBox ? "ME" : "ALLY"}
                             </span>
                           </div>
                         );
@@ -1419,6 +1623,7 @@ export default function App() {
                 </button>
               </div>
             )}
+            </div>
           </div>
         );
         });
@@ -1482,13 +1687,83 @@ export default function App() {
 
             <div>
               <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
+                <Users size={14} /> Game Mode
+              </label>
+              <div className="grid grid-cols-3 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                {[
+                  { id: "ffa", label: "Free-for-all" },
+                  { id: "2hg", label: "Two-Headed" },
+                  { id: "archenemy", label: "Archenemy" },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => {
+                      setGameMode(m.id);
+                      setStartingPlayerId(null);
+                      // Two-Headed Giant is 2v2, so the pod size isn't a
+                      // free choice. Archenemy needs someone to be alone
+                      // against at least two others.
+                      if (m.id === "2hg") {
+                        setPlayerCount(4);
+                        setStartingLife(60);
+                      } else if (m.id === "archenemy") {
+                        if (playerCount < 4) setPlayerCount(4);
+                        setStartingLife(60);
+                      } else {
+                        setStartingLife(40);
+                      }
+                    }}
+                    className={`py-2.5 rounded-lg font-bold text-xs transition-all ${
+                      gameMode === m.id
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              {gameMode !== "ffa" && (
+                <p className="text-[11px] text-neutral-500 mt-2 leading-snug">
+                  {gameMode === "2hg"
+                    ? "Teammates share one life total; commander damage is still tracked per player. Team results aren't recorded to the stats."
+                    : "The archenemy plays alone; everyone else shares one life total. Team results aren't recorded to the stats."}
+                </p>
+              )}
+            </div>
+
+            {gameMode === "archenemy" && (
+              <div>
+                <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2">
+                  Who's the archenemy?
+                </label>
+                <div className="grid grid-cols-5 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                  {slots.slice(0, playerCount).map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setArchenemySlotId(s.id)}
+                      className={`py-2.5 px-1 rounded-lg font-bold text-[11px] truncate transition-all ${
+                        archenemySlotId === s.id
+                          ? "bg-red-600 text-white"
+                          : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                      }`}
+                    >
+                      {s.player ? s.player.name : `Slot ${s.id}`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
                 <Heart size={14} /> Starting Life{" "}
                 <span className="normal-case font-normal text-neutral-600">
                   (applies on reset)
                 </span>
               </label>
-              <div className="grid grid-cols-3 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
-                {[20, 30, 40].map((num) => (
+              <div className="grid grid-cols-4 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                {[20, 30, 40, 60].map((num) => (
                   <button
                     key={num}
                     onClick={() => setStartingLife(num)}
@@ -2507,10 +2782,16 @@ export default function App() {
                   {winner.commanderName}
                 </span>
               )}
-              {!winner.player && (
+              {isTeamGame ? (
                 <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-widest mt-1">
-                  No profile linked — win won't be recorded
+                  Team game — not recorded
                 </span>
+              ) : (
+                !winner.player && (
+                  <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-widest mt-1">
+                    No profile linked — win won't be recorded
+                  </span>
+                )
               )}
             </div>
 
