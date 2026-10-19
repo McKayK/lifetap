@@ -324,62 +324,110 @@ export default function App() {
 
   // iOS parks a home-screen web app at a NEGATIVE scroll offset after
   // rotating into landscape on a notched iPhone: window.scrollY and
-  // visualViewport.offsetTop both sit at -(notch inset), measured at -62 here.
-  // The layout viewport starts 62px BELOW the visible area, so everything
-  // paints 62px too low and the bottom 62px is cut off. No CSS can see it —
-  // safe-area insets read 0, padding reads 0 — and position:fixed does not
-  // escape it either, because fixed anchors to the layout viewport, not to
-  // what you can see. html/body being overflow:hidden is what makes it stick:
-  // nothing is scrollable, so iOS never scrolls back.
+  // visualViewport.offsetTop both sit at -(notch inset). The layout viewport
+  // then starts below the visible area, so everything paints too low and the
+  // bottom is cut off. No CSS can see it, and position:fixed does not escape
+  // it either, because fixed anchors to the layout viewport. html/body being
+  // overflow:hidden is what makes it stick: nothing is scrollable, so iOS
+  // never scrolls back.
   //
-  // Calling scrollTo alone is NOT enough. It corrects the paint while leaving
-  // every hit region at the old offset, so taps land on the control above the
-  // one you touched and buttons only fire if you press 62px below them.
-  // Restoring scrollability around the reset and forcing a reflow on both
-  // sides of it makes iOS redo layout and hit testing together, so what you
-  // see and what you can touch agree.
+  // Resetting the scroll alone is not enough — it corrects the paint while
+  // leaving hit regions at the old offset, so taps land on the control above
+  // the one you touched. Releasing the overflow lock around the reset and
+  // forcing a reflow on both sides rebuilds layout and hit testing together.
+  //
+  // This fires ONLY on a real orientation change. It used to run on every
+  // resize and on visualViewport events, which meant the software keyboard
+  // triggered it: opening the keyboard resizes the visual viewport and iOS
+  // scrolls the focused field into view, this yanked the scroll back to 0,
+  // and every keystroke restarted the fight — the whole UI bouncing and the
+  // field ending up underneath the keyboard.
   useEffect(() => {
+    const isEditing = () => {
+      const el = document.activeElement;
+      return (
+        !!el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable)
+      );
+    };
     const unstick = () => {
       const html = document.documentElement;
       const body = document.body;
       const prevHtml = html.style.overflow;
       const prevBody = body.style.overflow;
-      // Briefly scrollable, so the scroll reset is a real one iOS honors.
       html.style.overflow = "auto";
       body.style.overflow = "auto";
-      void html.offsetHeight; // flush layout with the lock released
+      void html.offsetHeight;
       window.scrollTo(0, 0);
       html.scrollTop = 0;
       body.scrollTop = 0;
       html.style.overflow = prevHtml;
       body.style.overflow = prevBody;
-      void html.offsetHeight; // flush again with the lock restored
+      void html.offsetHeight;
     };
-    // Fires unconditionally rather than only when an offset is detected: the
-    // hit regions can be stale even once scrollY already reads 0.
-    const onRotate = () => {
+    let wasLandscape = window.innerWidth >= window.innerHeight;
+    const onMaybeRotate = () => {
+      const nowLandscape = window.innerWidth >= window.innerHeight;
+      // A keyboard opening changes the height but never the orientation.
+      if (nowLandscape === wasLandscape) return;
+      wasLandscape = nowLandscape;
+      if (isEditing()) return;
       unstick();
       requestAnimationFrame(unstick);
       setTimeout(unstick, 120);
       setTimeout(unstick, 400);
     };
-    const onViewportScroll = () => {
-      if (window.scrollY !== 0 || (window.visualViewport?.offsetTop ?? 0) !== 0)
-        unstick();
-    };
-    onRotate();
-    window.addEventListener("orientationchange", onRotate);
-    window.addEventListener("resize", onRotate);
-    window.addEventListener("pageshow", onRotate);
-    window.visualViewport?.addEventListener("resize", onRotate);
-    window.visualViewport?.addEventListener("scroll", onViewportScroll);
+    unstick();
+    window.addEventListener("orientationchange", onMaybeRotate);
+    window.addEventListener("resize", onMaybeRotate);
+    window.addEventListener("pageshow", onMaybeRotate);
     return () => {
-      window.removeEventListener("orientationchange", onRotate);
-      window.removeEventListener("resize", onRotate);
-      window.removeEventListener("pageshow", onRotate);
-      window.visualViewport?.removeEventListener("resize", onRotate);
-      window.visualViewport?.removeEventListener("scroll", onViewportScroll);
+      window.removeEventListener("orientationchange", onMaybeRotate);
+      window.removeEventListener("resize", onMaybeRotate);
+      window.removeEventListener("pageshow", onMaybeRotate);
     };
+  }, []);
+
+  // Publish the software keyboard's height as --kb so any panel can keep
+  // itself above it (see .kb-safe in index.css). The app is a fixed,
+  // non-scrolling surface, so without this iOS has nowhere to scroll a
+  // focused field to and simply leaves it behind the keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const apply = () => {
+      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty("--kb", kb + "px");
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      document.documentElement.style.removeProperty("--kb");
+    };
+  }, []);
+
+  // Once the keyboard has finished animating, bring whatever was focused
+  // into view inside its own scroll container. Global, so it covers every
+  // field in the app rather than needing a handler on each one.
+  useEffect(() => {
+    const onFocusIn = (e) => {
+      const el = e.target;
+      if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) return;
+      setTimeout(() => {
+        try {
+          el.scrollIntoView({ block: "center", behavior: "smooth" });
+        } catch {
+          /* older WebKit without the options form - not worth a fallback */
+        }
+      }, 300);
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
   }, []);
 
   // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
@@ -1232,9 +1280,10 @@ export default function App() {
             {/* Background Art */}
             {slot.bgImage && (
               <div
-                className={`absolute inset-0 bg-cover ${
-                  playerCount === 2 ? "bg-center" : "bg-top"
-                }`}
+                // Always centre the art. bg-top cropped to the top strip of
+                // the image, which on a short tile (5P, or any compact pod)
+                // read as the picture sliding off-centre.
+                className="absolute inset-0 bg-cover bg-center"
                 style={{
                   backgroundImage: `url(${slot.bgImage})`,
                   filter: "brightness(0.75) contrast(1.15)",
@@ -1441,7 +1490,13 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="flex flex-col items-center justify-center my-auto relative gap-1">
+              {/* Dead-centre in the tile, out of the flex flow entirely.
+                  As a flow child with my-auto it got squeezed off-centre
+                  whenever the name pill and the mini-grid left it less room
+                  than it wanted, which is why small tiles looked pushed up.
+                  The parent is relative, so inset-0 is the tile. */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 pointer-events-none">
+                <div className="relative flex flex-col items-center gap-1">
                 {isCmdTargetTile ? (
                   <div
                     className="flex flex-col items-center gap-1"
@@ -1498,6 +1553,7 @@ export default function App() {
                     )}
                   </>
                 )}
+                </div>
               </div>
 
               {/* Commander damage mini-grid trigger — bottom-left, hidden
@@ -1642,7 +1698,7 @@ export default function App() {
       {/* 3. GLOBAL MATCH CONTROL MODAL */}
       {showControlHub && (
         <div
-          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
           onPointerDown={() => setShowControlHub(false)}
         >
           <div
@@ -1830,7 +1886,7 @@ export default function App() {
       {/* 4. SLOT PROFILE DRAWER */}
       {activeMenuSlot !== null && (
         <div
-          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
           onPointerDown={() => setActiveMenuSlot(null)}
         >
           <div
@@ -2451,7 +2507,7 @@ export default function App() {
       {/* 5. GAME HISTORY MODAL */}
       {showHistory && (
         <div
-          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
           onPointerDown={() => setShowHistory(false)}
         >
           <div
@@ -2506,7 +2562,7 @@ export default function App() {
       {/* 6. PLAYER STATS MODAL */}
       {showStats && (
         <div
-          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
           onPointerDown={() => setShowStats(false)}
         >
           <div
@@ -2603,7 +2659,7 @@ export default function App() {
       {/* 8. COIN FLIP & DICE MODAL */}
       {showCoinFlip && (
         <div
-          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
           onPointerDown={() => setShowCoinFlip(false)}
         >
           <div

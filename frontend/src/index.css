@@ -72,3 +72,13 @@ body {
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
 }
+
+/* Keeps a panel clear of the software keyboard. --kb is published from
+   visualViewport in App.jsx; it is 0 whenever the keyboard is closed, so this
+   is inert the rest of the time. Needed because the app is a fixed,
+   non-scrolling surface — iOS has nowhere to scroll a focused field to, and
+   without this the field just sits behind the keyboard. */
+.kb-safe {
+  padding-bottom: var(--kb, 0px);
+  transition: padding-bottom 0.18s ease-out;
+}
