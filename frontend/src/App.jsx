@@ -218,6 +218,24 @@ export default function App() {
   const longPressRefs = useRef({});
   const pointerDownOnTapTarget = useRef({});
 
+  // Press-and-hold repeat cleanup. Every path that ends a press has to clear
+  // BOTH the pending timer and the running interval — an interval whose
+  // handle has been lost keeps firing forever, which is the runaway -5 bug.
+  const clearHold = (key) => {
+    clearTimeout(longPressRefs.current[`${key}-timer`]);
+    clearInterval(longPressRefs.current[`${key}-interval`]);
+    longPressRefs.current[`${key}-timer`] = null;
+    longPressRefs.current[`${key}-interval`] = null;
+  };
+  const clearAllHolds = () => {
+    for (const k of Object.keys(longPressRefs.current)) {
+      clearTimeout(longPressRefs.current[k]);
+      clearInterval(longPressRefs.current[k]);
+      longPressRefs.current[k] = null;
+    }
+    pointerDownOnTapTarget.current = {};
+  };
+
   const [lifeDeltas, setLifeDeltas] = useState({});
   // Pending "clear this delta popup" timers, keyed by slot id — kept in a
   // ref (not state) so scheduling/clearing them is a plain side effect
@@ -547,6 +565,30 @@ export default function App() {
     const key = teamKey(aId);
     return !!key && key === teamKey(bId);
   };
+
+  // A hold can end without the element ever hearing about it. iOS fires
+  // pointercancel, not pointerup, when the system claims a touch (a second
+  // finger, a palm, an edge gesture). And React can unmount the tap zone
+  // outright mid-press — the tile swaps its whole interaction layer when
+  // anyone opens commander-damage mode, and the defeat overlay appears the
+  // moment a hold takes someone to 0. In every one of those cases the
+  // element's own handlers never run, and the repeat interval ticks on
+  // forever at -5 a go. These listeners are on window, so they fire whatever
+  // became of the element.
+  useEffect(() => {
+    const stop = () => clearAllHolds();
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+      document.removeEventListener("visibilitychange", stop);
+      clearAllHolds();
+    };
+  }, []);
 
   const isLethalCmd = (slot) =>
     Object.entries(slot.commanderDamage).some(
@@ -1336,21 +1378,24 @@ export default function App() {
                     className="absolute inset-0 touch-none active:bg-white/10"
                     onPointerDown={(e) => {
                       e.stopPropagation();
-                      const timer = setTimeout(
+                      // Same managed cleanup as the life zones rather than a
+                      // handle stashed on the DOM node, which is lost the
+                      // moment the element is replaced.
+                      const key = `${slot.id}-cmdhold`;
+                      clearHold(key);
+                      longPressRefs.current[`${key}-timer`] = setTimeout(
                         () => setEditingCmdSlot(slot.id),
                         500,
                       );
-                      e.currentTarget.dataset.timer = timer;
                     }}
                     onPointerUp={(e) => {
                       e.stopPropagation();
-                      clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                      clearHold(`${slot.id}-cmdhold`);
                       if (editingCmdSlot !== slot.id)
                         updateCommanderDamage(cmdViewerSlot.id, slot.id, 1);
                     }}
-                    onPointerLeave={(e) => {
-                      clearTimeout(parseInt(e.currentTarget.dataset.timer));
-                    }}
+                    onPointerCancel={() => clearHold(`${slot.id}-cmdhold`)}
+                    onPointerLeave={() => clearHold(`${slot.id}-cmdhold`)}
                   />
                 )}
               </div>
@@ -1370,40 +1415,52 @@ export default function App() {
               <div
                 onPointerDown={(e) => {
                   e.stopPropagation();
-                  pointerDownOnTapTarget.current[`${slot.id}-left`] = true;
-                  const timer = setTimeout(() => {
+                  const key = `${slot.id}-left`;
+                  // Never start a second repeat without killing the first:
+                  // overwriting the ref orphans the old interval for good.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = true;
+                  let repeats = 0;
+                  longPressRefs.current[`${key}-timer`] = setTimeout(() => {
                     updateLife(slot.id, -5);
                     showLifeDelta(slot.id, -5);
-                    longPressRefs.current[`${slot.id}-left-interval`] =
-                      setInterval(() => {
+                    longPressRefs.current[`${key}-interval`] = setInterval(
+                      () => {
+                        // Last-resort cap. ~40s of continuous holding is not
+                        // something anyone means to do, so if a handle ever
+                        // does go astray this still brings it to a stop.
+                        if (++repeats > 50) {
+                          clearHold(key);
+                          return;
+                        }
                         updateLife(slot.id, -5);
                         showLifeDelta(slot.id, -5);
-                      }, 800);
+                      },
+                      800,
+                    );
                   }, 500);
-                  longPressRefs.current[`${slot.id}-left-timer`] = timer;
                 }}
-                onPointerUp={(e) => {
-                  if (!pointerDownOnTapTarget.current[`${slot.id}-left`])
-                    return;
-                  pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
-                  clearTimeout(longPressRefs.current[`${slot.id}-left-timer`]);
-                  const interval =
-                    longPressRefs.current[`${slot.id}-left-interval`];
-                  if (interval) {
-                    clearInterval(interval);
-                    longPressRefs.current[`${slot.id}-left-interval`] = null;
-                  } else {
+                onPointerUp={() => {
+                  const key = `${slot.id}-left`;
+                  const wasHolding = !!longPressRefs.current[`${key}-interval`];
+                  const wasPressed = pointerDownOnTapTarget.current[key];
+                  // Clear FIRST, unconditionally. The old version returned
+                  // early when the press flag was already false and left the
+                  // interval running.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = false;
+                  if (wasPressed && !wasHolding) {
                     updateLife(slot.id, -1);
                     showLifeDelta(slot.id, -1);
                   }
                 }}
-                onPointerLeave={(e) => {
+                onPointerCancel={() => {
                   pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
-                  clearTimeout(longPressRefs.current[`${slot.id}-left-timer`]);
-                  clearInterval(
-                    longPressRefs.current[`${slot.id}-left-interval`],
-                  );
-                  longPressRefs.current[`${slot.id}-left-interval`] = null;
+                  clearHold(`${slot.id}-left`);
+                }}
+                onPointerLeave={() => {
+                  pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
+                  clearHold(`${slot.id}-left`);
                 }}
                 className="w-1/2 h-full touch-none active:bg-red-500/20 flex items-center justify-center"
               >
@@ -1412,40 +1469,52 @@ export default function App() {
               <div
                 onPointerDown={(e) => {
                   e.stopPropagation();
-                  pointerDownOnTapTarget.current[`${slot.id}-right`] = true;
-                  const timer = setTimeout(() => {
+                  const key = `${slot.id}-right`;
+                  // Never start a second repeat without killing the first:
+                  // overwriting the ref orphans the old interval for good.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = true;
+                  let repeats = 0;
+                  longPressRefs.current[`${key}-timer`] = setTimeout(() => {
                     updateLife(slot.id, 5);
                     showLifeDelta(slot.id, 5);
-                    longPressRefs.current[`${slot.id}-right-interval`] =
-                      setInterval(() => {
+                    longPressRefs.current[`${key}-interval`] = setInterval(
+                      () => {
+                        // Last-resort cap. ~40s of continuous holding is not
+                        // something anyone means to do, so if a handle ever
+                        // does go astray this still brings it to a stop.
+                        if (++repeats > 50) {
+                          clearHold(key);
+                          return;
+                        }
                         updateLife(slot.id, 5);
                         showLifeDelta(slot.id, 5);
-                      }, 800);
+                      },
+                      800,
+                    );
                   }, 500);
-                  longPressRefs.current[`${slot.id}-right-timer`] = timer;
                 }}
-                onPointerUp={(e) => {
-                  if (!pointerDownOnTapTarget.current[`${slot.id}-right`])
-                    return;
-                  pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
-                  clearTimeout(longPressRefs.current[`${slot.id}-right-timer`]);
-                  const interval =
-                    longPressRefs.current[`${slot.id}-right-interval`];
-                  if (interval) {
-                    clearInterval(interval);
-                    longPressRefs.current[`${slot.id}-right-interval`] = null;
-                  } else {
+                onPointerUp={() => {
+                  const key = `${slot.id}-right`;
+                  const wasHolding = !!longPressRefs.current[`${key}-interval`];
+                  const wasPressed = pointerDownOnTapTarget.current[key];
+                  // Clear FIRST, unconditionally. The old version returned
+                  // early when the press flag was already false and left the
+                  // interval running.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = false;
+                  if (wasPressed && !wasHolding) {
                     updateLife(slot.id, 1);
                     showLifeDelta(slot.id, 1);
                   }
                 }}
-                onPointerLeave={(e) => {
+                onPointerCancel={() => {
                   pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
-                  clearTimeout(longPressRefs.current[`${slot.id}-right-timer`]);
-                  clearInterval(
-                    longPressRefs.current[`${slot.id}-right-interval`],
-                  );
-                  longPressRefs.current[`${slot.id}-right-interval`] = null;
+                  clearHold(`${slot.id}-right`);
+                }}
+                onPointerLeave={() => {
+                  pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
+                  clearHold(`${slot.id}-right`);
                 }}
                 className="w-1/2 h-full touch-none active:bg-green-500/20 flex items-center justify-center"
               >

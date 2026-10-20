@@ -1,0 +1,3008 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  User,
+  Settings,
+  X,
+  Plus,
+  Star,
+  Search,
+  Loader2,
+  Dices,
+  Layers,
+  Users,
+  BarChart3,
+  Heart,
+  UserMinus,
+} from "lucide-react";
+
+// ---------------------------------------------------------------------------
+// TABLE LAYOUTS — the single source of truth for where each seat physically
+// sits on the device. row/col/span describe the seat's cell in the main grid.
+// `orient` is how far that seat's tile is turned CLOCKWISE so it reads
+// right-side-up for the person sitting there:
+//
+//     0   = sitting at the near edge (tile upright)
+//    90   = sitting along the LEFT edge   (top of the text points screen-right)
+//   180   = sitting across the table      (tile upside-down)
+//   270   = sitting along the RIGHT edge  (top of the text points screen-left)
+//
+// This replaced a `rotated` boolean, which could only express 0 and 180 — not
+// enough for a 5-player table, where four people sit along the two long edges
+// and the fifth sits at the end. The commander damage mini-grid derives its
+// box positions from this too, so it always mirrors the real table.
+// ---------------------------------------------------------------------------
+const TABLE_LAYOUTS = {
+  2: {
+    rows: 2,
+    cols: 1,
+    cells: [
+      { row: 0, col: 0, span: 1, orient: 180 },
+      { row: 1, col: 0, span: 1, orient: 0 },
+    ],
+  },
+  3: {
+    rows: 2,
+    cols: 2,
+    cells: [
+      { row: 0, col: 0, span: 1, orient: 180 },
+      { row: 0, col: 1, span: 1, orient: 180 },
+      { row: 1, col: 0, span: 2, orient: 0 },
+    ],
+  },
+  4: {
+    rows: 2,
+    cols: 2,
+    cells: [
+      { row: 0, col: 0, span: 1, orient: 180 },
+      { row: 0, col: 1, span: 1, orient: 180 },
+      { row: 1, col: 0, span: 1, orient: 0 },
+      { row: 1, col: 1, span: 1, orient: 0 },
+    ],
+  },
+  // Four players along the long edges facing each other, one at the end —
+  // NOT two across the top and three along the bottom, which is what the old
+  // all-180 version assumed.
+  5: {
+    rows: 3,
+    cols: 2,
+    cells: [
+      { row: 0, col: 0, span: 1, orient: 90 },
+      { row: 0, col: 1, span: 1, orient: 270 },
+      { row: 1, col: 0, span: 1, orient: 90 },
+      { row: 1, col: 1, span: 1, orient: 270 },
+      { row: 2, col: 0, span: 2, orient: 0 },
+    ],
+  },
+};
+
+// A tile's own box is always its grid cell, but a SIDE seat's content has to
+// be laid out in a box with width and height swapped before it is turned:
+// rotating a div spins its pixels without changing its layout box, so a
+// 384x280 tile would still lay out content as 384x280 and then overflow once
+// rotated. Container query units read the tile's own dimensions, so this
+// needs no measurement in JS (Safari 16+, which the table iPad is on).
+const seatContentStyle = (orient) => {
+  switch (orient) {
+    case 90:
+      return {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100cqh",
+        height: "100cqw",
+        transformOrigin: "0 0",
+        transform: "rotate(90deg) translateY(-100%)",
+      };
+    case 270:
+      return {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100cqh",
+        height: "100cqw",
+        transformOrigin: "0 0",
+        transform: "rotate(-90deg) translateX(-100%)",
+      };
+    case 180:
+      return { position: "absolute", inset: 0, transform: "rotate(180deg)" };
+    default:
+      return { position: "absolute", inset: 0 };
+  }
+};
+
+// Where should seat `seatIndex`'s box be placed inside a grid that belongs to
+// the viewer at `viewerIndex`? If the viewer's container is rotated 180° (top
+// seats), we place cells at the 180°-rotated grid position so that, after the
+// CSS rotation flips them back, every box lands in the same direction as the
+// actual person at the table. Reversing a flat ID list (the old approach)
+// only works for a full rectangle — this works for 3P and 5P layouts too.
+// Arcade neon colors for the "GG" death screen — a fresh one is picked at
+// random for each elimination (see the deathColors effect below).
+const NEON_PALETTE = [
+  { glow1: "#ff2fd6", glow2: "#2fe8ff" }, // magenta / cyan
+  { glow1: "#39ff14", glow2: "#ff2fd6" }, // green / magenta
+  { glow1: "#00e5ff", glow2: "#ffea00" }, // cyan / yellow
+  { glow1: "#ff9500", glow2: "#ff2fd6" }, // orange / magenta
+  { glow1: "#c644fc", glow2: "#39ff14" }, // purple / green
+  { glow1: "#ffea00", glow2: "#00e5ff" }, // yellow / cyan
+];
+
+// Where does seat `seatIndex`'s box go inside the mini-grid drawn on the tile
+// belonging to the viewer at `viewerIndex`? That tile is rotated by the
+// viewer's orient, so we place each box at the position which, once the CSS
+// rotation is applied, lands where that person actually sits.
+//
+// A quarter turn TRANSPOSES the grid: a 3-row x 2-col table is 2 rows x 3 cols
+// to someone sitting along the side, and a seat that spans two columns at the
+// end of the table spans two ROWS from there. That's why this returns grid
+// dimensions and both span axes rather than just a row/col pair.
+const getSeatCell = (playerCount, seatIndex, viewerIndex) => {
+  const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
+  const { row: R, col: C, span } = layout.cells[seatIndex];
+  const { rows, cols } = layout;
+  const orient = layout.cells[viewerIndex]?.orient || 0;
+  switch (orient) {
+    case 180:
+      return {
+        row: rows - 1 - R,
+        col: cols - 1 - C - (span - 1),
+        rowSpan: 1,
+        colSpan: span,
+        gridRows: rows,
+        gridCols: cols,
+      };
+    case 90:
+      return {
+        row: cols - span - C,
+        col: R,
+        rowSpan: span,
+        colSpan: 1,
+        gridRows: cols,
+        gridCols: rows,
+      };
+    case 270:
+      return {
+        row: C,
+        col: rows - 1 - R,
+        rowSpan: span,
+        colSpan: 1,
+        gridRows: cols,
+        gridCols: rows,
+      };
+    default:
+      return {
+        row: R,
+        col: C,
+        rowSpan: 1,
+        colSpan: span,
+        gridRows: rows,
+        gridCols: cols,
+      };
+  }
+};
+
+export default function App() {
+  const makeSlot = (id) => ({
+    id,
+    label: `Slot ${id}`,
+    player: null,
+    life: 40,
+    bgImage: "",
+    commanderName: "",
+    killedBySlotId: null,
+    commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+  });
+
+  const [slots, setSlots] = useState([1, 2, 3, 4, 5].map(makeSlot));
+
+  const [playerCount, setPlayerCount] = useState(4);
+  const [startingLife, setStartingLife] = useState(40);
+  // "ffa" | "2hg" | "archenemy". Team modes share ONE life pool per team;
+  // commander damage stays per player, which is what the rules want and what
+  // slot.commanderDamage already models — a seat tracks damage from each
+  // other seat individually, so nothing there needed changing.
+  const [gameMode, setGameMode] = useState("ffa");
+  // Which seat is alone against everyone else in Archenemy.
+  const [archenemySlotId, setArchenemySlotId] = useState(1);
+  const [dbPlayers, setDbPlayers] = useState([]);
+  const [activeMenuSlot, setActiveMenuSlot] = useState(null);
+  const [newPlayerName, setNewPlayerName] = useState("");
+  const [activeCmdSlotId, setActiveCmdSlotId] = useState(null);
+  const [renamingPlayerId, setRenamingPlayerId] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [gameHistory, setGameHistory] = useState([]);
+  const [editingCmdSlot, setEditingCmdSlot] = useState(null);
+
+  const longPressRefs = useRef({});
+  const pointerDownOnTapTarget = useRef({});
+
+  // Press-and-hold repeat cleanup. Every path that ends a press has to clear
+  // BOTH the pending timer and the running interval — an interval whose
+  // handle has been lost keeps firing forever, which is the runaway -5 bug.
+  const clearHold = (key) => {
+    clearTimeout(longPressRefs.current[`${key}-timer`]);
+    clearInterval(longPressRefs.current[`${key}-interval`]);
+    longPressRefs.current[`${key}-timer`] = null;
+    longPressRefs.current[`${key}-interval`] = null;
+  };
+  const clearAllHolds = () => {
+    for (const k of Object.keys(longPressRefs.current)) {
+      clearTimeout(longPressRefs.current[k]);
+      clearInterval(longPressRefs.current[k]);
+      longPressRefs.current[k] = null;
+    }
+    pointerDownOnTapTarget.current = {};
+  };
+
+  const [lifeDeltas, setLifeDeltas] = useState({});
+  // Pending "clear this delta popup" timers, keyed by slot id — kept in a
+  // ref (not state) so scheduling/clearing them is a plain side effect
+  // instead of living inside the setLifeDeltas updater. Doing it inside the
+  // updater used to work in production but silently leaked an orphaned
+  // timer per tap in dev: React 18 Strict Mode intentionally calls state
+  // updater functions twice to catch exactly this kind of impurity (a
+  // function that schedules real timers as a side effect isn't safe to
+  // call twice), and the throwaway second call still scheduled a real
+  // setTimeout with no reference kept to cancel it — so ~5s after your
+  // *first* tap in a streak, that leaked timer would fire and wipe the
+  // popup regardless of how many times you'd tapped since, making it look
+  // like the count "restarted" mid-streak. Production builds don't run
+  // Strict Mode's double-invoke, which is why it only showed up in dev.
+  const lifeDeltaTimers = useRef({});
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [playerFavorites, setPlayerFavorites] = useState([]);
+  // Which player the list in playerFavorites actually belongs to. Without
+  // this the list is anonymous, so a slow or failed fetch leaves the PREVIOUS
+  // seat's commander art on screen under the new seat's name.
+  const [favoritesPlayerId, setFavoritesPlayerId] = useState(null);
+  const [favoritesError, setFavoritesError] = useState(false);
+  // Monotonic request token — a response is only applied if it belongs to the
+  // most recent request, so two overlapping fetches can't resolve out of
+  // order and leave the loser's data on screen.
+  const favoritesReqRef = useRef(0);
+  // Same guard for the two Scryfall lookups. Lower stakes than favorites —
+  // the worst case is the wrong card's results rather than the wrong
+  // person's identity — but it is the same out-of-order-response bug.
+  const searchReqRef = useRef(0);
+  const printingsReqRef = useRef(0);
+  // When a search result has more than one printing, this holds the list of
+  // printings (each its own art) so the player can pick a specific one
+  // instead of always getting whichever printing Scryfall returns first.
+  const [printingsOptions, setPrintingsOptions] = useState(null);
+  const [printingsForName, setPrintingsForName] = useState("");
+  const [isLoadingPrintings, setIsLoadingPrintings] = useState(false);
+  // Which half of the drawer is showing for an assigned player — browsing
+  // existing favorites, or adding new art. Keeping these on separate tabs
+  // instead of one long stacked column is the fix for "scatterbrained".
+  const [drawerTab, setDrawerTab] = useState("favorites");
+  // Long-press-to-delete on favorite cards: which favorite (by id) is
+  // currently "armed" and showing its delete overlay. A plain tap selects
+  // the commander; holding for ~500ms arms delete mode instead, and a
+  // second, separate tap on the armed card confirms the delete — mirroring
+  // the long-press pattern used elsewhere in the app (life ±5, commander
+  // damage) instead of a native confirm() dialog.
+  const [armedDeleteFavId, setArmedDeleteFavId] = useState(null);
+  const favJustArmed = useRef(false);
+  // "Add New" tab defaults to the simple, primary flow — Scryfall art
+  // search — with custom-art upload tucked behind this toggle so it isn't
+  // another always-visible form competing for attention.
+  const [showCustomUpload, setShowCustomUpload] = useState(false);
+  const [showControlHub, setShowControlHub] = useState(false);
+  const [startingPlayerId, setStartingPlayerId] = useState(null);
+  const [isRolling, setIsRolling] = useState(false);
+
+  // Monarch / Initiative designations (slot ids)
+  const [monarchSlotId, setMonarchSlotId] = useState(null);
+  const [initiativeSlotId, setInitiativeSlotId] = useState(null);
+
+  // Temporarily allow life adjustments on a defeated slot
+  const [adjustingSlotId, setAdjustingSlotId] = useState(null);
+  const adjustTimerRef = useRef(null);
+  // TEMPORARY — lets the ?debug=1 overlay report the root container's ACTUAL
+  // computed padding and height, not just what env() claims. Safe to delete
+  // with the rest of the debug overlay.
+  const rootRef = useRef(null);
+
+  // Coin flip + dice state
+  const [showCoinFlip, setShowCoinFlip] = useState(false);
+  const [coinFlipCount, setCoinFlipCount] = useState(1);
+  const [coinFlipResults, setCoinFlipResults] = useState([]);
+  const [isFlipping, setIsFlipping] = useState(false);
+  const [diceResults, setDiceResults] = useState(null); // { sides, values }
+  const [isRollingDice, setIsRollingDice] = useState(false);
+
+  // Win screen state — a win is PENDING until confirmed, so an accidental
+  // tap that drops the last opponent to 0 never writes to the database.
+  const [winner, setWinner] = useState(null);
+  const [winConfirmed, setWinConfirmed] = useState(false);
+  const [savingWin, setSavingWin] = useState(false);
+  const [winError, setWinError] = useState(null);
+  const autoWinTriggered = useRef(false);
+
+  // A "short" viewport (landscape phone, mainly) doesn't have enough
+  // vertical room for the normal fixed-size tile content — same problem
+  // the 5-player pod already solves with clamp()-based compact sizing.
+  // Tracking this lets every pod size borrow that compact styling instead
+  // of only ever engaging it for playerCount === 5.
+  const [isShortViewport, setIsShortViewport] = useState(
+    () => typeof window !== "undefined" && window.innerHeight <= 500,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-height: 500px)");
+    const handleChange = (e) => setIsShortViewport(e.matches);
+    setIsShortViewport(mq.matches);
+    mq.addEventListener("change", handleChange);
+    return () => mq.removeEventListener("change", handleChange);
+  }, []);
+
+  // iOS parks a home-screen web app at a NEGATIVE scroll offset after
+  // rotating into landscape on a notched iPhone: window.scrollY and
+  // visualViewport.offsetTop both sit at -(notch inset). The layout viewport
+  // then starts below the visible area, so everything paints too low and the
+  // bottom is cut off. No CSS can see it, and position:fixed does not escape
+  // it either, because fixed anchors to the layout viewport. html/body being
+  // overflow:hidden is what makes it stick: nothing is scrollable, so iOS
+  // never scrolls back.
+  //
+  // Resetting the scroll alone is not enough — it corrects the paint while
+  // leaving hit regions at the old offset, so taps land on the control above
+  // the one you touched. Releasing the overflow lock around the reset and
+  // forcing a reflow on both sides rebuilds layout and hit testing together.
+  //
+  // This fires ONLY on a real orientation change. It used to run on every
+  // resize and on visualViewport events, which meant the software keyboard
+  // triggered it: opening the keyboard resizes the visual viewport and iOS
+  // scrolls the focused field into view, this yanked the scroll back to 0,
+  // and every keystroke restarted the fight — the whole UI bouncing and the
+  // field ending up underneath the keyboard.
+  useEffect(() => {
+    const isEditing = () => {
+      const el = document.activeElement;
+      return (
+        !!el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable)
+      );
+    };
+    const unstick = () => {
+      const html = document.documentElement;
+      const body = document.body;
+      const prevHtml = html.style.overflow;
+      const prevBody = body.style.overflow;
+      html.style.overflow = "auto";
+      body.style.overflow = "auto";
+      void html.offsetHeight;
+      window.scrollTo(0, 0);
+      html.scrollTop = 0;
+      body.scrollTop = 0;
+      html.style.overflow = prevHtml;
+      body.style.overflow = prevBody;
+      void html.offsetHeight;
+    };
+    let wasLandscape = window.innerWidth >= window.innerHeight;
+    const onMaybeRotate = () => {
+      const nowLandscape = window.innerWidth >= window.innerHeight;
+      // A keyboard opening changes the height but never the orientation.
+      if (nowLandscape === wasLandscape) return;
+      wasLandscape = nowLandscape;
+      if (isEditing()) return;
+      unstick();
+      requestAnimationFrame(unstick);
+      setTimeout(unstick, 120);
+      setTimeout(unstick, 400);
+    };
+    unstick();
+    window.addEventListener("orientationchange", onMaybeRotate);
+    window.addEventListener("resize", onMaybeRotate);
+    window.addEventListener("pageshow", onMaybeRotate);
+    return () => {
+      window.removeEventListener("orientationchange", onMaybeRotate);
+      window.removeEventListener("resize", onMaybeRotate);
+      window.removeEventListener("pageshow", onMaybeRotate);
+    };
+  }, []);
+
+  // Publish the software keyboard's height as --kb so any panel can keep
+  // itself above it (see .kb-safe in index.css). The app is a fixed,
+  // non-scrolling surface, so without this iOS has nowhere to scroll a
+  // focused field to and simply leaves it behind the keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const apply = () => {
+      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty("--kb", kb + "px");
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      document.documentElement.style.removeProperty("--kb");
+    };
+  }, []);
+
+  // Once the keyboard has finished animating, bring whatever was focused
+  // into view inside its own scroll container. Global, so it covers every
+  // field in the app rather than needing a handler on each one.
+  useEffect(() => {
+    const onFocusIn = (e) => {
+      const el = e.target;
+      if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) return;
+      setTimeout(() => {
+        try {
+          el.scrollIntoView({ block: "center", behavior: "smooth" });
+        } catch {
+          /* older WebKit without the options form - not worth a fallback */
+        }
+      }, 300);
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, []);
+
+  // TEMPORARY diagnostic overlay — visit the site with ?debug=1 on the URL
+  // (or load it via /debug.html, which injects this same app without ever
+  // changing the address bar, so it survives Add to Home Screen) to see
+  // real viewport/safe-area numbers on screen. Safe to delete once the
+  // iPad standalone-mode layout issue is resolved.
+  const [showDebugOverlay] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      (new URLSearchParams(window.location.search).get("debug") === "1" ||
+        window.location.pathname.endsWith("/debug.html")),
+  );
+  const [debugInfo, setDebugInfo] = useState(null);
+  useEffect(() => {
+    if (!showDebugOverlay || typeof window === "undefined") return;
+    const readDebugInfo = () => {
+      const cs = getComputedStyle(document.documentElement);
+      const el = rootRef.current;
+      const es = el ? getComputedStyle(el) : null;
+      setDebugInfo({
+        orientation: window.innerWidth >= window.innerHeight ? "landscape" : "portrait",
+        innerW: window.innerWidth,
+        innerH: window.innerHeight,
+        screenW: window.screen?.width,
+        screenH: window.screen?.height,
+        vvW: window.visualViewport?.width,
+        vvH: window.visualViewport?.height,
+        dpr: window.devicePixelRatio,
+        standalone: window.navigator?.standalone,
+        sat: cs.getPropertyValue("--debug-sat").trim(),
+        sar: cs.getPropertyValue("--debug-sar").trim(),
+        sab: cs.getPropertyValue("--debug-sab").trim(),
+        sal: cs.getPropertyValue("--debug-sal").trim(),
+        padT: es ? es.paddingTop : "?",
+        padR: es ? es.paddingRight : "?",
+        padB: es ? es.paddingBottom : "?",
+        padL: es ? es.paddingLeft : "?",
+        boxH: el ? el.offsetHeight : "?",
+        contentH: el ? el.clientHeight : "?",
+        scrollH: el ? el.scrollHeight : "?",
+        rectTop: el ? Math.round(el.getBoundingClientRect().top) : "?",
+        rectLeft: el ? Math.round(el.getBoundingClientRect().left) : "?",
+        bodyTop: Math.round(document.body.getBoundingClientRect().top),
+        htmlTop: Math.round(
+          document.documentElement.getBoundingClientRect().top,
+        ),
+        bodyH: document.body.offsetHeight,
+        htmlH: document.documentElement.offsetHeight,
+        scrollY: Math.round(window.scrollY),
+        vvTop: Math.round(window.visualViewport?.offsetTop ?? -1),
+        vvPage: Math.round(window.visualViewport?.pageTop ?? -1),
+      });
+    };
+    readDebugInfo();
+    window.addEventListener("resize", readDebugInfo);
+    window.addEventListener("orientationchange", readDebugInfo);
+    return () => {
+      window.removeEventListener("resize", readDebugInfo);
+      window.removeEventListener("orientationchange", readDebugInfo);
+    };
+  }, [showDebugOverlay]);
+
+  // Configurable via .env (VITE_API_URL) so local dev doesn't require
+  // editing source. Falls back to the production deployment.
+  const BACKEND_URL =
+    import.meta.env.VITE_API_URL || "https://life.mckaykleinman.com/api";
+  const ASSET_ORIGIN = BACKEND_URL.replace(/\/api\/?$/, "");
+
+  // Custom uploads are stored as relative paths ("/custom-art/...") so they
+  // survive domain/IP changes. Older rows may still hold absolute URLs.
+  const resolveArt = (url) => {
+    if (!url) return "";
+    return url.startsWith("http") ? url : `${ASSET_ORIGIN}${url}`;
+  };
+
+  const visibleSlots = slots.slice(0, playerCount);
+  const layout = TABLE_LAYOUTS[playerCount] || TABLE_LAYOUTS[4];
+  // 5P always squeezes tiles to a third of the screen height, so it always
+  // gets the clamp()-based compact sizing. Any other pod size gets it too
+  // whenever the viewport itself is short (landscape phone, small window),
+  // so nothing gets cut off regardless of pod size or orientation.
+  const isCompact = playerCount === 5 || isShortViewport;
+
+  // Lethal commander damage — only counts opponents actually in the current
+  // pod, so shrinking the pod size mid-game can't kill someone with damage
+  // from a now-hidden seat.
+  // Which life pool a seat drinks from. null = its own (free-for-all).
+  // 2HG pairs the two seats on each side of the table: in the 4-player
+  // layout seats 1+2 sit across the top and 3+4 along the bottom, so
+  // teammates are side by side and opponents face them, which is how the
+  // table is actually arranged.
+  const teamKey = (slotId) => {
+    if (gameMode === "2hg") return slotId <= 2 ? "A" : "B";
+    if (gameMode === "archenemy")
+      return slotId === archenemySlotId ? "AE" : "HEROES";
+    return null;
+  };
+
+  // Every seat sharing this seat's pool, itself included. In free-for-all
+  // that's just the seat.
+  const teamMates = (slotId) => {
+    const key = teamKey(slotId);
+    if (!key) return [slotId];
+    return [1, 2, 3, 4, 5]
+      .slice(0, playerCount)
+      .filter((id) => teamKey(id) === key);
+  };
+
+  const isTeamGame = gameMode !== "ffa";
+
+  // Two seats on the same team. Commander damage between them is not a
+  // thing: they're not opponents, and because they also share a life pool,
+  // letting a partner's commander "hit" you would drain your own team.
+  const areAllies = (aId, bId) => {
+    if (aId === bId) return false;
+    const key = teamKey(aId);
+    return !!key && key === teamKey(bId);
+  };
+
+  // A hold can end without the element ever hearing about it. iOS fires
+  // pointercancel, not pointerup, when the system claims a touch (a second
+  // finger, a palm, an edge gesture). And React can unmount the tap zone
+  // outright mid-press — the tile swaps its whole interaction layer when
+  // anyone opens commander-damage mode, and the defeat overlay appears the
+  // moment a hold takes someone to 0. In every one of those cases the
+  // element's own handlers never run, and the repeat interval ticks on
+  // forever at -5 a go. These listeners are on window, so they fire whatever
+  // became of the element.
+  useEffect(() => {
+    const stop = () => clearAllHolds();
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+      document.removeEventListener("visibilitychange", stop);
+      clearAllHolds();
+    };
+  }, []);
+
+  const isLethalCmd = (slot) =>
+    Object.entries(slot.commanderDamage).some(
+      ([oppId, dmg]) =>
+        Number(oppId) <= playerCount &&
+        dmg >= 21 &&
+        !areAllies(slot.id, Number(oppId)),
+    );
+
+
+  // A seat is out when its POOL is empty, or when anyone drinking from that
+  // pool has taken 21 from a single commander — a team shares a life total,
+  // so it shares a defeat.
+  const seatIsOut = (list, slot) =>
+    teamMates(slot.id).some((id) => {
+      const mate = list.find((s) => s.id === id);
+      return mate && (mate.life <= 0 || isLethalCmd(mate));
+    });
+
+  // Writes a life value to every seat on the pool at once, so each teammate's
+  // tile shows the same number and any of them can spend it.
+  const writeTeamLife = (list, slotId, nextLife) => {
+    const mates = teamMates(slotId);
+    return list.map((s) =>
+      mates.includes(s.id) ? { ...s, life: nextLife } : s,
+    );
+  };
+
+  const fetchGameHistory = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/games`);
+      const data = await res.json();
+      setGameHistory(data);
+    } catch (err) {
+      console.error("Error fetching game history:", err);
+    }
+  };
+
+  // Fetching players also re-syncs any slot that holds a snapshot of that
+  // player, so win counts shown on tiles/menus never go stale.
+  const fetchPlayers = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/players`);
+      const data = await res.json();
+      setDbPlayers(data);
+      setSlots((prev) =>
+        prev.map((s) =>
+          s.player
+            ? { ...s, player: data.find((p) => p.id === s.player.id) || s.player }
+            : s,
+        ),
+      );
+    } catch (err) {
+      console.error("Error fetching players:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchPlayers();
+    fetchGameHistory();
+
+    let wakeLock = null;
+    const requestWakeLock = async () => {
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+      } catch (err) {
+        console.log("Wake lock not supported:", err);
+      }
+    };
+    requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") requestWakeLock();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLock) wakeLock.release();
+    };
+  }, []);
+
+  const activeMenuPlayer = slots.find((s) => s.id === activeMenuSlot)?.player;
+
+  // Never render favorites that belong to a different player than the one the
+  // drawer is currently showing. Even if a future change reintroduces a race,
+  // the worst case becomes an empty grid rather than someone else's art.
+  const visibleFavorites =
+    activeMenuPlayer && favoritesPlayerId === activeMenuPlayer.id
+      ? playerFavorites
+      : [];
+
+  // Depend on the player id, not the whole slots array — otherwise every
+  // life tick while the menu is open refires this fetch.
+  useEffect(() => {
+    if (activeMenuSlot === null) return;
+    // Drop the previous seat's list and invalidate anything still in flight
+    // BEFORE fetching. Closing the drawer used to leave the old list intact
+    // (this effect returns early when activeMenuSlot is null), so reopening
+    // on a different seat showed the last player's commanders until the new
+    // request landed — and forever if it failed.
+    favoritesReqRef.current += 1;
+    setPlayerFavorites([]);
+    setFavoritesPlayerId(null);
+    setFavoritesError(false);
+    if (activeMenuPlayer) fetchFavorites(activeMenuPlayer.id);
+    searchReqRef.current += 1;
+    printingsReqRef.current += 1;
+    setSearchQuery("");
+    setSearchResults([]);
+    setPrintingsOptions(null);
+    setPrintingsForName("");
+    setDrawerTab("favorites");
+    setArmedDeleteFavId(null);
+    setShowCustomUpload(false);
+  }, [activeMenuSlot, activeMenuPlayer?.id]);
+
+  const fetchFavorites = async (playerId) => {
+    const reqId = (favoritesReqRef.current += 1);
+    setFavoritesError(false);
+    try {
+      const res = await fetch(`${BACKEND_URL}/players/${playerId}/favorites`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // A newer request started while this one was in flight — drop it.
+      if (reqId !== favoritesReqRef.current) return;
+      setPlayerFavorites(data);
+      setFavoritesPlayerId(playerId);
+    } catch (err) {
+      if (reqId !== favoritesReqRef.current) return;
+      console.error("Error fetching favorites:", err);
+      // Fail visibly and empty rather than silently leaving stale art up.
+      setPlayerFavorites([]);
+      setFavoritesPlayerId(playerId);
+      setFavoritesError(true);
+    }
+  };
+
+  const handleDeleteGameEntry = async (gameId) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/games/${gameId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setGameHistory((prev) => prev.filter((g) => g.id !== gameId));
+        // Win totals are computed from games server-side; refetch to sync.
+        fetchPlayers();
+      }
+    } catch (err) {
+      console.error("Error deleting game entry:", err);
+    }
+  };
+
+  const handleCreatePlayer = async (e) => {
+    e.preventDefault();
+    if (!newPlayerName.trim()) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/players`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newPlayerName.trim() }),
+      });
+      if (res.ok) {
+        setNewPlayerName("");
+        fetchPlayers();
+      }
+    } catch (err) {
+      console.error("Error creating player:", err);
+    }
+  };
+
+  const handleDeletePlayer = async (playerId) => {
+    if (!confirm("Delete this profile permanently?")) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/players/${playerId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        fetchPlayers();
+        setSlots((prev) =>
+          prev.map((s) =>
+            s.player?.id === playerId
+              ? { ...s, player: null, bgImage: "", commanderName: "" }
+              : s,
+          ),
+        );
+      }
+    } catch (err) {
+      console.error("Error deleting player:", err);
+    }
+  };
+
+  const handleRenamePlayer = async (playerId) => {
+    if (!renameValue.trim()) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/players/${playerId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: renameValue.trim() }),
+      });
+      if (res.ok) {
+        fetchPlayers();
+        setSlots((prev) =>
+          prev.map((s) =>
+            s.player?.id === playerId
+              ? { ...s, player: { ...s.player, name: renameValue.trim() } }
+              : s,
+          ),
+        );
+        setRenamingPlayerId(null);
+        setRenameValue("");
+      }
+    } catch (err) {
+      console.error("Error renaming player:", err);
+    }
+  };
+
+  const handleScryfallSearch = async (e) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    const reqId = (searchReqRef.current += 1);
+    setIsSearching(true);
+    try {
+      const res = await fetch(
+        `https://api.scryfall.com/cards/search?q=is:commander+name:${encodeURIComponent(searchQuery.trim())}`,
+      );
+      const data = await res.json();
+      if (reqId !== searchReqRef.current) return; // superseded
+      setSearchResults(data.data || []);
+    } catch (err) {
+      if (reqId !== searchReqRef.current) return;
+      console.error("Scryfall search error:", err);
+      setSearchResults([]); // don't leave the previous query's hits up
+    } finally {
+      // Only the newest request owns the spinner.
+      if (reqId === searchReqRef.current) setIsSearching(false);
+    }
+  };
+
+  const handleSelectCommander = async (card) => {
+    const currentSlot = slots.find((s) => s.id === activeMenuSlot);
+    if (!currentSlot || !currentSlot.player) return;
+    // Pin the seat now. The favorite is POSTed against currentSlot.player,
+    // but the slot update below used to read activeMenuSlot again AFTER the
+    // await — so switching seats mid-save wrote the art onto whichever seat
+    // was open by then, while the favorite went to the original player.
+    const targetSlotId = currentSlot.id;
+
+    const image_url =
+      card.image_uris?.art_crop ||
+      card.card_faces?.[0]?.image_uris?.art_crop ||
+      card.card_faces?.[1]?.image_uris?.art_crop ||
+      "";
+
+    if (!image_url)
+      return alert("Could not extract art asset from Scryfall metadata.");
+
+    try {
+      await fetch(`${BACKEND_URL}/players/${currentSlot.player.id}/favorites`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commander_name: card.name,
+          image_url,
+          scryfall_id: card.id,
+        }),
+      });
+      setSlots((prev) =>
+        prev.map((s) =>
+          s.id === targetSlotId
+            ? { ...s, bgImage: image_url, commanderName: card.name }
+            : s,
+        ),
+      );
+      setPrintingsOptions(null);
+      // Only close the drawer if it is still showing the seat we just saved.
+      setActiveMenuSlot((cur) => (cur === targetSlotId ? null : cur));
+    } catch (err) {
+      console.error("Error saving favorite:", err);
+    }
+  };
+
+  // A search result only shows one art. Before saving it, check whether the
+  // card has other printings (different arts) and, if so, let the player
+  // pick which one instead of always saving whichever art Scryfall's
+  // default search happened to return.
+  const handleCardClick = async (card) => {
+    const reqId = (printingsReqRef.current += 1);
+    setIsLoadingPrintings(true);
+    try {
+      const res = await fetch(
+        `https://api.scryfall.com/cards/search?q=${encodeURIComponent(`!"${card.name}"`)}&unique=prints&order=released`,
+      );
+      const data = await res.json();
+      if (reqId !== printingsReqRef.current) return; // superseded
+      const prints = (data.data || []).filter(
+        (c) =>
+          c.image_uris?.art_crop || c.card_faces?.[0]?.image_uris?.art_crop,
+      );
+      if (prints.length > 1) {
+        setPrintingsOptions(prints);
+        setPrintingsForName(card.name);
+      } else {
+        handleSelectCommander(card);
+      }
+    } catch (err) {
+      if (reqId !== printingsReqRef.current) return;
+      console.error("Error fetching printings:", err);
+      handleSelectCommander(card); // fall back to saving the original result
+    } finally {
+      if (reqId === printingsReqRef.current) setIsLoadingPrintings(false);
+    }
+  };
+
+  const handleSelectExistingFavorite = (fav) => {
+    setSlots((prev) =>
+      prev.map((s) =>
+        s.id === activeMenuSlot
+          ? {
+              ...s,
+              bgImage: resolveArt(fav.image_url),
+              commanderName: fav.commander_name || "Commander",
+            }
+          : s,
+      ),
+    );
+    setActiveMenuSlot(null);
+  };
+
+  const handleDeleteFavorite = async (favId) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/favorites/${favId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setPlayerFavorites((prev) => prev.filter((f) => f.id !== favId));
+      } else {
+        console.error(
+          "Error deleting favorite: server responded",
+          res.status,
+        );
+      }
+    } catch (err) {
+      console.error("Error deleting favorite:", err);
+    }
+    setArmedDeleteFavId(null);
+  };
+
+  const assignPlayerToSlot = (slotId, playerObj) => {
+    setSlots((prev) =>
+      prev.map((s) =>
+        s.id === slotId ? { ...s, player: playerObj, bgImage: "" } : s,
+      ),
+    );
+  };
+
+  const showLifeDelta = (id, amount) => {
+    // Side effects live here, in the event handler itself — NOT inside the
+    // setLifeDeltas updater below, which stays a pure function of its
+    // previous state so it's safe for React to call however many times it
+    // wants (see the note on lifeDeltaTimers above).
+    if (lifeDeltaTimers.current[id]) clearTimeout(lifeDeltaTimers.current[id]);
+    lifeDeltaTimers.current[id] = setTimeout(() => {
+      delete lifeDeltaTimers.current[id];
+      setLifeDeltas((p) => {
+        const next = { ...p };
+        delete next[id];
+        return next;
+      });
+    }, 5000);
+
+    setLifeDeltas((prev) => {
+      const existing = prev[id];
+      const newTotal = (existing?.amount ?? 0) + amount;
+      return { ...prev, [id]: { amount: newTotal } };
+    });
+  };
+
+  const updateLife = (id, amount) => {
+    setSlots((prev) => {
+      const cur = prev.find((s) => s.id === id);
+      if (!cur) return prev;
+      return writeTeamLife(prev, id, cur.life + amount);
+    });
+  };
+
+  const updateCommanderDamage = (targetSlotId, opponentSlotId, amount) => {
+    // Compute the delta that will ACTUALLY apply after clamping at 0, so
+    // decrementing damage that's already 0 can't hand out free life.
+    const target = slots.find((s) => s.id === targetSlotId);
+    if (!target) return;
+    // Belt and braces: the UI no longer offers a teammate as a source, but
+    // never let one through here either — it would drain the shared pool.
+    if (areAllies(targetSlotId, opponentSlotId)) return;
+    const current = target.commanderDamage[opponentSlotId] || 0;
+    const newDamage = Math.max(0, current + amount);
+    const applied = newDamage - current;
+    if (applied === 0) return;
+
+    // Commander damage also drains life, and in a team game that life comes
+    // out of the shared pool — so the damage lands on one player but the
+    // life comes off both teammates' tiles.
+    const nextLife = target.life - applied;
+    const mates = teamMates(targetSlotId);
+    setSlots((prev) =>
+      prev.map((s) => {
+        let next = s;
+        if (s.id === targetSlotId) {
+          const newCmd = { ...s.commanderDamage, [opponentSlotId]: newDamage };
+          // Recompute the killer from scratch: set it when a source crosses
+          // 21, clear or reassign it if damage is ticked back below lethal.
+          const lethalEntry = Object.entries(newCmd).find(
+            ([oppId, dmg]) => Number(oppId) <= playerCount && dmg >= 21,
+          );
+          next = {
+            ...next,
+            commanderDamage: newCmd,
+            killedBySlotId: lethalEntry ? Number(lethalEntry[0]) : null,
+          };
+        }
+        if (mates.includes(s.id)) next = { ...next, life: nextLife };
+        return next;
+      }),
+    );
+    showLifeDelta(targetSlotId, -applied);
+  };
+
+  const handleNewGameAndRoll = () => {
+    setShowControlHub(false);
+    setSlots((prev) =>
+      prev.map((s) => ({
+        ...s,
+        life: startingLife,
+        commanderDamage: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+        killedBySlotId: null,
+      })),
+    );
+    setStartingPlayerId(null);
+    setIsRolling(true);
+    Object.values(lifeDeltaTimers.current).forEach(clearTimeout);
+    lifeDeltaTimers.current = {};
+    setLifeDeltas({});
+    setMonarchSlotId(null);
+    setInitiativeSlotId(null);
+    setAdjustingSlotId(null);
+    autoWinTriggered.current = false;
+    setWinner(null);
+    setWinConfirmed(false);
+    setDeathColors({});
+
+    let counter = 0;
+    const maxTicks = 10;
+
+    const interval = setInterval(() => {
+      const randomSlot =
+        visibleSlots[Math.floor(Math.random() * visibleSlots.length)];
+      setStartingPlayerId(randomSlot.id);
+      counter++;
+
+      if (counter >= maxTicks) {
+        clearInterval(interval);
+        const finalSlot =
+          visibleSlots[Math.floor(Math.random() * visibleSlots.length)];
+        setStartingPlayerId(finalSlot.id);
+        setIsRolling(false);
+      }
+    }, 150);
+  };
+
+  // Logging a game IS recording the win — win totals are computed from the
+  // games table server-side, so there's no separate counter to bump (and no
+  // way for the two to double-count or drift).
+  const confirmWin = async () => {
+    if (!winner || savingWin) return;
+    if (isTeamGame) {
+      // Deliberately not recorded: the games table stores a single winner_id,
+      // and team results don't fit it. Acknowledge the win so the game can
+      // move on without writing anything.
+      setWinConfirmed(true);
+      return;
+    }
+    if (!winner.player) {
+      // This seat never had a profile linked, so there's nothing to record
+      // a win against — just acknowledge it so the game can move on.
+      setWinConfirmed(true);
+      return;
+    }
+    // Capture the seat now: the awaits below give the pod time to change
+    // underneath us, and this row must describe the game that was actually won.
+    const w = winner;
+    setSavingWin(true);
+    setWinError(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/games`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          winner_id: w.player.id,
+          winner_name: w.player.name,
+          player_count: playerCount,
+        }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.error) detail = body.error;
+        } catch {
+          /* non-JSON error body — the status is enough */
+        }
+        throw new Error(detail);
+      }
+      // Confirm as soon as the row exists. Previously the refreshes below were
+      // awaited FIRST, so a hiccup fetching history or players threw, the
+      // screen stayed on "Victory?", and tapping again logged the same win a
+      // second time. The refreshes are best-effort; the insert is what counts.
+      setWinConfirmed(true);
+      fetchGameHistory();
+      fetchPlayers();
+    } catch (err) {
+      // This used to fail completely silently: the button showed its pressed
+      // animation, nothing changed, and the only trace was a console message
+      // no one can see on an iPad. Surface it and let them retry.
+      console.error("Error recording match win:", err);
+      setWinError(err?.message || "Couldn't reach the server");
+    } finally {
+      setSavingWin(false);
+    }
+  };
+
+  // Opens the pending win screen for a slot — from the auto-detector or the
+  // manual "Record Match Win" button. Nothing is written until confirmed.
+  const openWinScreen = (slot) => {
+    autoWinTriggered.current = true;
+    setWinner(slot);
+    setWinConfirmed(false);
+    setWinError(null);
+    setSavingWin(false);
+    setActiveMenuSlot(null);
+  };
+
+  // Auto-win detection. Considers every SEAT in the pod, not just the ones
+  // with a profile linked — a 4-player game with only 2 profiles loaded
+  // still has 4 people playing, and eliminating one profiled player
+  // shouldn't end the game while two unlinked seats are still alive.
+  // Re-arms itself if players come back above 0 (e.g. after cancelling a
+  // pending win and fixing a mis-tap).
+  useEffect(() => {
+    const currentVisible = slots.slice(0, playerCount);
+    if (currentVisible.length < 2) return;
+    const alive = currentVisible.filter((s) => !seatIsOut(currentVisible, s));
+    // The game ends when one TEAM is left, not one player — in 2HG two
+    // survivors on the same side is a win, and in free-for-all every seat is
+    // its own team so this behaves exactly as it did before.
+    const aliveTeams = new Set(
+      alive.map((s) => teamKey(s.id) || `solo-${s.id}`),
+    );
+    if (aliveTeams.size === 1 && alive.length > 0 && !autoWinTriggered.current) {
+      openWinScreen(alive[0]);
+    } else if (aliveTeams.size > 1 && autoWinTriggered.current && !winner) {
+      autoWinTriggered.current = false;
+    }
+  }, [slots, playerCount, winner, gameMode, archenemySlotId]);
+
+  // Random neon color per elimination, assigned once when a seat goes down
+  // and cleared again once they're back above 0 — so it stays stable while
+  // "GG" is showing, but the next elimination (for them or anyone else)
+  // gets its own fresh random pick.
+  const [deathColors, setDeathColors] = useState({});
+  useEffect(() => {
+    const currentVisible = slots.slice(0, playerCount);
+    setDeathColors((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const s of currentVisible) {
+        const dead = seatIsOut(currentVisible, s);
+        if (dead && !next[s.id]) {
+          next[s.id] =
+            NEON_PALETTE[Math.floor(Math.random() * NEON_PALETTE.length)];
+          changed = true;
+        } else if (!dead && next[s.id]) {
+          delete next[s.id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [slots, playerCount]);
+
+  const getShortName = (slot) => {
+    if (!slot) return "?";
+    if (slot.player) {
+      return slot.player.name.length <= 7
+        ? slot.player.name
+        : `${slot.player.name.substring(0, 6)}…`;
+    }
+    return `P${slot.id}`;
+  };
+
+  const getWinStreak = (playerId) => {
+    if (!playerId || gameHistory.length === 0) return 0;
+    let streak = 0;
+    for (const game of gameHistory) {
+      if (game.winner_id === playerId) streak++;
+      else break;
+    }
+    return streak;
+  };
+
+  // SQLite timestamps are "YYYY-MM-DD HH:MM:SS" — Safari refuses to parse
+  // that with a bare "Z" appended, so normalize to ISO-8601 first.
+  const formatGameDate = (playedAt) => {
+    if (!playedAt) return "";
+    const d = new Date(playedAt.replace(" ", "T") + "Z");
+    if (isNaN(d)) return playedAt;
+    return d.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+
+  const getGridClasses = () => {
+    if (playerCount === 2) return "grid-cols-1 grid-rows-2";
+    if (playerCount === 5) return "grid-cols-2 grid-rows-3";
+    return "grid-cols-2 grid-rows-2";
+  };
+
+  // Stats derived from history + players
+  const podBreakdown = gameHistory.reduce((acc, g) => {
+    acc[g.player_count] = (acc[g.player_count] || 0) + 1;
+    return acc;
+  }, {});
+  const leaderboard = [...dbPlayers].sort(
+    (a, b) => (b.wins || 0) - (a.wins || 0),
+  );
+
+  const winnerLifetimeWins = winner?.player
+    ? (dbPlayers.find((p) => p.id === winner.player.id)?.wins ??
+      winner.player.wins ??
+      0)
+    : 0;
+
+  return (
+    <div
+      ref={rootRef}
+      className={`h-screen supports-[height:100dvh]:h-dvh w-screen grid bg-neutral-950 app-safe-top gap-1 select-none touch-none text-white relative overflow-hidden ${getGridClasses()}`}
+    >
+      {/* 1. PLAYERS GRID LAYOUT */}
+      {(() => {
+        const cmdDamageMode = activeCmdSlotId !== null;
+        const cmdViewerIndex = cmdDamageMode
+          ? visibleSlots.findIndex((s) => s.id === activeCmdSlotId)
+          : -1;
+        const cmdViewerSlot =
+          cmdDamageMode && cmdViewerIndex >= 0
+            ? visibleSlots[cmdViewerIndex]
+            : null;
+        // The viewer's own seat orientation — every opponent tile's damage
+        // number/controls get counter-rotated to match THIS, not their own
+        // native orientation, so they read right-side-up for whoever is
+        // actually looking at them right now.
+        const cmdViewerOrient = cmdViewerSlot
+          ? layout.cells[cmdViewerIndex]?.orient || 0
+          : 0;
+        return visibleSlots.map((slot, index) => {
+        const seat = layout.cells[index];
+        const seatOrient = seat.orient || 0;
+        // A side seat sees the table transposed, so its mini-grid has the
+        // table's ROW count as its column count.
+        const quarterTurned = seatOrient === 90 || seatOrient === 270;
+        const miniCols = quarterTurned ? layout.rows : layout.cols;
+        const isSpannedRow = seat.span === 2;
+        const displayName = slot.player ? slot.player.name : slot.label;
+        const isStartingPlayer = startingPlayerId === slot.id;
+
+        const lethalCommanderDamage = isLethalCmd(slot);
+        const isDefeated = seatIsOut(visibleSlots, slot);
+        // Commander-damage mode takes over every tile at once, so a defeat
+        // overlay popping up mid-edit would just be in the way — suppress
+        // it for the duration.
+        const showDefeatOverlay =
+          isDefeated && adjustingSlotId !== slot.id && !cmdDamageMode;
+
+        // Commander-damage entry mode: tapping the mini-grid trigger on a
+        // tile puts every OTHER tile into "how much damage has this player
+        // dealt to the viewer" mode, in place — no separate popup needed.
+        const isCmdViewerTile = cmdViewerSlot && slot.id === cmdViewerSlot.id;
+        const isCmdTargetTile =
+          cmdViewerSlot &&
+          !isCmdViewerTile &&
+          !areAllies(cmdViewerSlot.id, slot.id);
+        const cmdAmt = isCmdTargetTile
+          ? cmdViewerSlot.commanderDamage[slot.id] || 0
+          : 0;
+        // This tile's own seat orientation differs from the viewer's, so
+        // its damage number/controls need an extra local flip to read
+        // right-side-up for the person actually looking at them.
+        // How far this tile's contents must turn, on top of their own seat
+        // rotation, to read right-side-up for whoever is entering damage.
+        const cmdDelta = isCmdTargetTile
+          ? (((cmdViewerOrient - seatOrient) % 360) + 360) % 360
+          : 0;
+
+        const delta = lifeDeltas[slot.id];
+
+        return (
+          <div
+            key={slot.id}
+            // container-type lets the rotation layer below size itself in
+            // cqw/cqh, i.e. this tile's own width and height.
+            style={{ containerType: "size" }}
+            className={`relative rounded-2xl overflow-hidden border transition-all duration-500 bg-neutral-900 ${
+              isStartingPlayer
+                ? "border-yellow-500 shadow-[inset_0_0_20px_rgba(234,179,8,0.15)]"
+                : "border-neutral-800"
+            } ${isSpannedRow ? "col-span-2" : ""}`}
+          >
+            {/* Seat rotation layer. The tile itself never turns, so its
+                border, rounding and grid cell stay put; only the contents
+                rotate to face whoever is sitting there. It is its own
+                container too, so anything nested that needs a further turn
+                (commander damage entry) can size against THIS box. */}
+            <div
+              className="flex flex-col items-center justify-center"
+              style={{
+                ...seatContentStyle(seatOrient),
+                containerType: "size",
+              }}
+            >
+            {/* Background Art */}
+            {slot.bgImage && (
+              <div
+                // Always centre the art. bg-top cropped to the top strip of
+                // the image, which on a short tile (5P, or any compact pod)
+                // read as the picture sliding off-centre.
+                className="absolute inset-0 bg-cover bg-center"
+                style={{
+                  backgroundImage: `url(${slot.bgImage})`,
+                  filter: "brightness(0.75) contrast(1.15)",
+                }}
+              />
+            )}
+
+            {/* Overshield / low-health tints removed — the pulsing overlays
+                were distracting at the table. Their keyframes stay defined in
+                tailwind.config.js in case they ever come back behind a
+                setting. Do NOT name the utility classes here: Tailwind scans
+                comments too, and naming them puts the dead CSS back in the
+                bundle. */}
+
+            {isCmdTargetTile ? (
+              // Commander-damage entry for this opponent, in place of their
+              // normal life tap zones: tap = +1, long-press arms a -/+
+              // split (same interaction the old popup used).
+              <div
+                className="flex touch-none"
+                style={seatContentStyle(cmdDelta)}
+              >
+                {editingCmdSlot === slot.id ? (
+                  <>
+                    <div
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        updateCommanderDamage(cmdViewerSlot.id, slot.id, -1);
+                      }}
+                      className="w-1/2 h-full touch-none active:bg-red-500/20 flex items-center justify-center"
+                    >
+                      <span className="text-2xl font-black text-neutral-400">
+                        −
+                      </span>
+                    </div>
+                    <div
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        updateCommanderDamage(cmdViewerSlot.id, slot.id, 1);
+                      }}
+                      className="w-1/2 h-full touch-none active:bg-green-500/20 flex items-center justify-center"
+                    >
+                      <span className="text-2xl font-black text-neutral-400">
+                        +
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div
+                    className="absolute inset-0 touch-none active:bg-white/10"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      // Same managed cleanup as the life zones rather than a
+                      // handle stashed on the DOM node, which is lost the
+                      // moment the element is replaced.
+                      const key = `${slot.id}-cmdhold`;
+                      clearHold(key);
+                      longPressRefs.current[`${key}-timer`] = setTimeout(
+                        () => setEditingCmdSlot(slot.id),
+                        500,
+                      );
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      clearHold(`${slot.id}-cmdhold`);
+                      if (editingCmdSlot !== slot.id)
+                        updateCommanderDamage(cmdViewerSlot.id, slot.id, 1);
+                    }}
+                    onPointerCancel={() => clearHold(`${slot.id}-cmdhold`)}
+                    onPointerLeave={() => clearHold(`${slot.id}-cmdhold`)}
+                  />
+                )}
+              </div>
+            ) : isCmdViewerTile ? (
+              // The viewer's own tile — tap anywhere to leave
+              // commander-damage mode and go back to normal life view.
+              <div
+                className="absolute inset-0 touch-none active:bg-white/5"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  setActiveCmdSlotId(null);
+                  setEditingCmdSlot(null);
+                }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex">
+              <div
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const key = `${slot.id}-left`;
+                  // Never start a second repeat without killing the first:
+                  // overwriting the ref orphans the old interval for good.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = true;
+                  let repeats = 0;
+                  longPressRefs.current[`${key}-timer`] = setTimeout(() => {
+                    updateLife(slot.id, -5);
+                    showLifeDelta(slot.id, -5);
+                    longPressRefs.current[`${key}-interval`] = setInterval(
+                      () => {
+                        // Last-resort cap. ~40s of continuous holding is not
+                        // something anyone means to do, so if a handle ever
+                        // does go astray this still brings it to a stop.
+                        if (++repeats > 50) {
+                          clearHold(key);
+                          return;
+                        }
+                        updateLife(slot.id, -5);
+                        showLifeDelta(slot.id, -5);
+                      },
+                      800,
+                    );
+                  }, 500);
+                }}
+                onPointerUp={() => {
+                  const key = `${slot.id}-left`;
+                  const wasHolding = !!longPressRefs.current[`${key}-interval`];
+                  const wasPressed = pointerDownOnTapTarget.current[key];
+                  // Clear FIRST, unconditionally. The old version returned
+                  // early when the press flag was already false and left the
+                  // interval running.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = false;
+                  if (wasPressed && !wasHolding) {
+                    updateLife(slot.id, -1);
+                    showLifeDelta(slot.id, -1);
+                  }
+                }}
+                onPointerCancel={() => {
+                  pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
+                  clearHold(`${slot.id}-left`);
+                }}
+                onPointerLeave={() => {
+                  pointerDownOnTapTarget.current[`${slot.id}-left`] = false;
+                  clearHold(`${slot.id}-left`);
+                }}
+                className="w-1/2 h-full touch-none active:bg-red-500/20 flex items-center justify-center"
+              >
+                <span className="text-2xl font-black text-neutral-400">−</span>
+              </div>
+              <div
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const key = `${slot.id}-right`;
+                  // Never start a second repeat without killing the first:
+                  // overwriting the ref orphans the old interval for good.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = true;
+                  let repeats = 0;
+                  longPressRefs.current[`${key}-timer`] = setTimeout(() => {
+                    updateLife(slot.id, 5);
+                    showLifeDelta(slot.id, 5);
+                    longPressRefs.current[`${key}-interval`] = setInterval(
+                      () => {
+                        // Last-resort cap. ~40s of continuous holding is not
+                        // something anyone means to do, so if a handle ever
+                        // does go astray this still brings it to a stop.
+                        if (++repeats > 50) {
+                          clearHold(key);
+                          return;
+                        }
+                        updateLife(slot.id, 5);
+                        showLifeDelta(slot.id, 5);
+                      },
+                      800,
+                    );
+                  }, 500);
+                }}
+                onPointerUp={() => {
+                  const key = `${slot.id}-right`;
+                  const wasHolding = !!longPressRefs.current[`${key}-interval`];
+                  const wasPressed = pointerDownOnTapTarget.current[key];
+                  // Clear FIRST, unconditionally. The old version returned
+                  // early when the press flag was already false and left the
+                  // interval running.
+                  clearHold(key);
+                  pointerDownOnTapTarget.current[key] = false;
+                  if (wasPressed && !wasHolding) {
+                    updateLife(slot.id, 1);
+                    showLifeDelta(slot.id, 1);
+                  }
+                }}
+                onPointerCancel={() => {
+                  pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
+                  clearHold(`${slot.id}-right`);
+                }}
+                onPointerLeave={() => {
+                  pointerDownOnTapTarget.current[`${slot.id}-right`] = false;
+                  clearHold(`${slot.id}-right`);
+                }}
+                className="w-1/2 h-full touch-none active:bg-green-500/20 flex items-center justify-center"
+              >
+                <span className="text-2xl font-black text-neutral-400">+</span>
+              </div>
+              </div>
+            )}
+
+            <div
+              className={`relative z-10 flex flex-col items-center justify-between h-full w-full pointer-events-none ${isCompact ? "p-1.5" : "p-3"}`}
+            >
+              <div className="flex justify-start w-full items-start pointer-events-none gap-2">
+                {/* Tapping the name itself opens Slot Configuration — replaces
+                    the old separate gear-icon button. */}
+                <button
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setActiveMenuSlot(slot.id);
+                  }}
+                  className={`font-bold tracking-wide flex items-center gap-1.5 bg-black/50 rounded-full border pointer-events-auto active:scale-95 transition-all ${
+                    isCompact ? "text-sm px-2.5 py-1" : "text-lg px-4 py-1.5"
+                  } ${
+                    isStartingPlayer
+                      ? "border-yellow-500/50 text-yellow-400"
+                      : "border-neutral-700/30 text-neutral-200"
+                  }`}
+                >
+                  <User size={isCompact ? 14 : 17} /> {displayName}
+                  {slot.player && getWinStreak(slot.player.id) >= 2 && (
+                    <span className="text-sm">🔥</span>
+                  )}
+                  {monarchSlotId === slot.id && (
+                    <span className="text-sm" title="Monarch">
+                      👑
+                    </span>
+                  )}
+                  {initiativeSlotId === slot.id && (
+                    <span className="text-sm" title="Initiative">
+                      ⚔️
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Dead-centre in the tile, out of the flex flow entirely.
+                  As a flow child with my-auto it got squeezed off-centre
+                  whenever the name pill and the mini-grid left it less room
+                  than it wanted, which is why small tiles looked pushed up.
+                  The parent is relative, so inset-0 is the tile. */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 pointer-events-none">
+                <div className="relative flex flex-col items-center gap-1">
+                {isCmdTargetTile ? (
+                  <div
+                    className="flex flex-col items-center gap-1"
+                    style={
+                      cmdDelta ? { transform: `rotate(${cmdDelta}deg)` } : undefined
+                    }
+                  >
+                    <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400 bg-black/40 px-2 py-0.5 rounded-full">
+                      Dealt to {getShortName(cmdViewerSlot)}
+                    </span>
+                    <span
+                      className={`font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] tabular-nums text-7xl sm:text-8xl md:text-9xl ${cmdAmt > 0 ? "text-red-400" : "text-neutral-500"}`}
+                      style={
+                        isCompact
+                          ? { fontSize: "clamp(2rem, 11vh, 6rem)", lineHeight: 1 }
+                          : undefined
+                      }
+                    >
+                      {cmdAmt}
+                    </span>
+                  </div>
+                ) : isCmdViewerTile ? (
+                  <>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-neutral-500">
+                      Viewing As
+                    </span>
+                    <span className="text-2xl font-bold text-neutral-300">
+                      {displayName}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 mt-1">
+                      Tap anywhere to return
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className="font-black tracking-tighter drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] text-white tabular-nums text-7xl sm:text-8xl md:text-9xl"
+                      style={
+                        isCompact
+                          ? { fontSize: "clamp(2rem, 11vh, 6rem)", lineHeight: 1 }
+                          : undefined
+                      }
+                    >
+                      {slot.life}
+                    </span>
+                    {delta && (
+                      <span
+                        className={`absolute -top-8 text-2xl font-black tabular-nums pointer-events-none
+                          ${delta.amount > 0 ? "text-green-400" : "text-red-400"}
+                          animate-bounce`}
+                      >
+                        {delta.amount > 0 ? `+${delta.amount}` : delta.amount}
+                      </span>
+                    )}
+                  </>
+                )}
+                </div>
+              </div>
+
+              {/* Commander damage mini-grid trigger — bottom-left, hidden
+                  while commander-damage mode is already active elsewhere on
+                  the board. Opens by putting every OTHER tile into damage
+                  entry mode in place (see isCmdTargetTile above), no popup. */}
+              {!cmdDamageMode && (
+              <div className="w-full flex flex-col items-start gap-2 pointer-events-none">
+                <div className="pointer-events-auto">
+                  <button
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      setActiveCmdSlotId(slot.id);
+                    }}
+                    className={`grid bg-black/40 rounded-xl border border-neutral-800/60 ${isCompact ? "gap-0.5 p-0.5" : "gap-1 p-1"}`}
+                    style={{
+                      gridTemplateColumns: `repeat(${miniCols}, minmax(0, 1fr))`,
+                    }}
+                  >
+                    {visibleSlots.map((opp, oppIndex) => {
+                      const cell = getSeatCell(playerCount, oppIndex, index);
+                      const cellStyle = {
+                        gridRow: `${cell.row + 1} / span ${cell.rowSpan}`,
+                        gridColumn: `${cell.col + 1} / span ${cell.colSpan}`,
+                      };
+                      // Own seat, or a teammate's — neither can deal you
+                      // commander damage, so both render as inert labels
+                      // rather than a counter you could tap up by mistake.
+                      const isSelfBox = opp.id === slot.id;
+                      const isAllyBox = areAllies(slot.id, opp.id);
+                      if (isSelfBox || isAllyBox) {
+                        return (
+                          <div
+                            key={`self-${opp.id}`}
+                            style={{
+                              ...cellStyle,
+                              ...(isCompact
+                                ? { height: "clamp(14px, 4.5vh, 40px)" }
+                                : {}),
+                            }}
+                            className={`rounded-lg bg-neutral-950/20 border border-neutral-800/40 flex items-center justify-center ${isCompact ? "min-w-[3rem]" : "h-10 min-w-[5rem]"}`}
+                          >
+                            <span
+                              className={`font-black text-neutral-600 uppercase tracking-widest ${isCompact ? "text-[8px]" : "text-[10px]"}`}
+                            >
+                              {isSelfBox ? "ME" : "ALLY"}
+                            </span>
+                          </div>
+                        );
+                      }
+                      const amt = slot.commanderDamage[opp.id] || 0;
+                      return (
+                        <div
+                          key={opp.id}
+                          style={{
+                            ...cellStyle,
+                            ...(isCompact
+                              ? { height: "clamp(14px, 4.5vh, 40px)" }
+                              : {}),
+                          }}
+                          className={`rounded-lg flex items-center justify-center border tabular-nums ${isCompact ? "min-w-[3rem]" : "h-10 min-w-[5rem]"} ${
+                            amt > 0
+                              ? "bg-red-950/60 border-red-700/50"
+                              : "bg-neutral-900/70 border-neutral-800"
+                          }`}
+                        >
+                          <span
+                            className={`font-black ${isCompact ? "text-sm" : "text-xl"} ${amt > 0 ? "text-red-400" : "text-neutral-600"}`}
+                          >
+                            {amt}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </button>
+                </div>
+              </div>
+              )}
+            </div>
+
+            {/* Defeat overlay — covers the ENTIRE tile, header included.
+                "Adjust Life" is the only way back to the controls
+                underneath, so mis-taps can still be corrected. */}
+            {showDefeatOverlay && (
+              <div className="absolute inset-0 z-20 bg-black/80 flex flex-col items-center justify-center gap-3 select-none">
+                <span
+                  className={`font-black tracking-tighter animate-neon-flicker ${isCompact ? "text-6xl" : "text-8xl sm:text-9xl"}`}
+                  style={{
+                    color: "#fff",
+                    textShadow: `0 0 4px #fff, 0 0 11px #fff, 0 0 19px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow1}, 0 0 40px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow1}, 0 0 80px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow1}, 0 0 100px ${(deathColors[slot.id] || NEON_PALETTE[0]).glow2}`,
+                  }}
+                >
+                  GG
+                </span>
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-sm font-black uppercase tracking-widest text-red-500">
+                    {lethalCommanderDamage ? "Commander Lethal" : "Defeated"}
+                  </span>
+                  {lethalCommanderDamage && slot.killedBySlotId && (
+                    <span className="text-xs font-bold text-neutral-400 tracking-wide">
+                      by{" "}
+                      <span className="text-red-400">
+                        {getShortName(
+                          slots.find((s) => s.id === slot.killedBySlotId),
+                        )}
+                      </span>
+                    </span>
+                  )}
+                </div>
+                <button
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    clearTimeout(adjustTimerRef.current);
+                    setAdjustingSlotId(slot.id);
+                    adjustTimerRef.current = setTimeout(
+                      () => setAdjustingSlotId(null),
+                      6000,
+                    );
+                  }}
+                  className="mt-1 text-xs font-bold uppercase tracking-wider text-neutral-300 bg-neutral-800/80 border border-neutral-700 px-4 py-1.5 rounded-full active:scale-95"
+                >
+                  Adjust Life
+                </button>
+              </div>
+            )}
+            </div>
+          </div>
+        );
+        });
+      })()}
+
+      {/* 2. CENTER CONTROL HUB TRIGGER BUTTON */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40">
+        <button
+          onPointerDown={() => setShowControlHub(true)}
+          className="p-3 bg-neutral-900 border-2 border-neutral-700 hover:border-neutral-500 text-neutral-400 hover:text-white rounded-full shadow-[0_0_20px_rgba(0,0,0,0.75)] active:scale-90"
+        >
+          <Layers size={20} />
+        </button>
+      </div>
+
+      {/* 3. GLOBAL MATCH CONTROL MODAL */}
+      {showControlHub && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
+          onPointerDown={() => setShowControlHub(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-lg rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar overscroll-contain"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <h2 className="text-xl font-bold text-neutral-200">
+                Match Controls
+              </h2>
+              <button
+                onClick={() => setShowControlHub(false)}
+                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
+                <Users size={14} /> Pod Size
+              </label>
+              <div className="grid grid-cols-4 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                {[2, 3, 4, 5].map((num) => (
+                  <button
+                    key={num}
+                    onClick={() => {
+                      setPlayerCount(num);
+                      setStartingPlayerId(null);
+                    }}
+                    className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
+                      playerCount === num
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    {num} P
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
+                <Users size={14} /> Game Mode
+              </label>
+              <div className="grid grid-cols-3 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                {[
+                  { id: "ffa", label: "Free-for-all" },
+                  { id: "2hg", label: "Two-Headed" },
+                  { id: "archenemy", label: "Archenemy" },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => {
+                      setGameMode(m.id);
+                      setStartingPlayerId(null);
+                      // Two-Headed Giant is 2v2, so the pod size isn't a
+                      // free choice. Archenemy needs someone to be alone
+                      // against at least two others.
+                      if (m.id === "2hg") {
+                        setPlayerCount(4);
+                        setStartingLife(60);
+                      } else if (m.id === "archenemy") {
+                        if (playerCount < 4) setPlayerCount(4);
+                        setStartingLife(60);
+                      } else {
+                        setStartingLife(40);
+                      }
+                    }}
+                    className={`py-2.5 rounded-lg font-bold text-xs transition-all ${
+                      gameMode === m.id
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              {gameMode !== "ffa" && (
+                <p className="text-[11px] text-neutral-500 mt-2 leading-snug">
+                  {gameMode === "2hg"
+                    ? "Teammates share one life total; commander damage is still tracked per player. Team results aren't recorded to the stats."
+                    : "The archenemy plays alone; everyone else shares one life total. Team results aren't recorded to the stats."}
+                </p>
+              )}
+            </div>
+
+            {gameMode === "archenemy" && (
+              <div>
+                <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2">
+                  Who's the archenemy?
+                </label>
+                <div className="grid grid-cols-5 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                  {slots.slice(0, playerCount).map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setArchenemySlotId(s.id)}
+                      className={`py-2.5 px-1 rounded-lg font-bold text-[11px] truncate transition-all ${
+                        archenemySlotId === s.id
+                          ? "bg-red-600 text-white"
+                          : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                      }`}
+                    >
+                      {s.player ? s.player.name : `Slot ${s.id}`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs uppercase tracking-wider font-semibold text-neutral-400 block mb-2 flex items-center gap-1.5">
+                <Heart size={14} /> Starting Life{" "}
+                <span className="normal-case font-normal text-neutral-600">
+                  (applies on reset)
+                </span>
+              </label>
+              <div className="grid grid-cols-4 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
+                {[20, 30, 40, 60].map((num) => (
+                  <button
+                    key={num}
+                    onClick={() => setStartingLife(num)}
+                    className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
+                      startingLife === num
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  fetchGameHistory();
+                  setShowHistory(true);
+                }}
+                className="py-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-base transition-all active:scale-95"
+              >
+                <Star size={18} className="text-yellow-500 fill-yellow-500" />
+                History
+              </button>
+              <button
+                onClick={() => {
+                  fetchGameHistory();
+                  fetchPlayers();
+                  setShowStats(true);
+                }}
+                className="py-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-base transition-all active:scale-95"
+              >
+                <BarChart3 size={18} className="text-blue-400" />
+                Stats
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                setShowControlHub(false);
+                setShowCoinFlip(true);
+                setCoinFlipResults([]);
+                setDiceResults(null);
+              }}
+              className="w-full py-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold rounded-xl flex items-center justify-center gap-2 text-base transition-all active:scale-95"
+            >
+              🪙 Coin Flip & Dice
+            </button>
+
+            <button
+              onClick={handleNewGameAndRoll}
+              disabled={isRolling}
+              className="w-full py-5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 text-base shadow-md active:scale-95 transition-all"
+            >
+              <Dices size={20} className={isRolling ? "animate-spin" : ""} />
+              {isRolling ? "Rolling Turn One..." : "Reset & Roll First"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. SLOT PROFILE DRAWER */}
+      {activeMenuSlot !== null && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
+          onPointerDown={() => setActiveMenuSlot(null)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-2xl rounded-2xl p-6 flex flex-col gap-5 max-h-[94vh] overflow-y-auto no-scrollbar overscroll-contain shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <h2 className="text-xl font-bold text-neutral-100">
+                Slot Configuration
+              </h2>
+              <div className="flex items-center gap-1.5">
+                {/* Table status — compact icon toggles instead of a whole
+                    separate labeled section. */}
+                <button
+                  title="Monarch"
+                  onClick={() =>
+                    setMonarchSlotId((m) =>
+                      m === activeMenuSlot ? null : activeMenuSlot,
+                    )
+                  }
+                  className={`p-2 text-base rounded-full border transition-all active:scale-95 ${
+                    monarchSlotId === activeMenuSlot
+                      ? "bg-yellow-600/30 border-yellow-500/60"
+                      : "bg-neutral-950 border-neutral-800 hover:border-neutral-700"
+                  }`}
+                >
+                  👑
+                </button>
+                <button
+                  title="Initiative"
+                  onClick={() =>
+                    setInitiativeSlotId((m) =>
+                      m === activeMenuSlot ? null : activeMenuSlot,
+                    )
+                  }
+                  className={`p-2 text-base rounded-full border transition-all active:scale-95 ${
+                    initiativeSlotId === activeMenuSlot
+                      ? "bg-blue-600/30 border-blue-500/60"
+                      : "bg-neutral-950 border-neutral-800 hover:border-neutral-700"
+                  }`}
+                >
+                  ⚔️
+                </button>
+                <button
+                  onClick={() => setActiveMenuSlot(null)}
+                  className="p-1.5 ml-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {!activeMenuPlayer ? (
+              <>
+                <div>
+                  <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                    Create New Profile
+                  </h3>
+                  <form onSubmit={handleCreatePlayer} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newPlayerName}
+                      onChange={(e) => setNewPlayerName(e.target.value)}
+                      placeholder="Player Name"
+                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-base outline-none focus:border-neutral-600 text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
+                    >
+                      <Plus size={20} />
+                    </button>
+                  </form>
+                </div>
+                <div>
+                  <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                    Assign Profile to Slot{" "}
+                    <span className="normal-case font-normal text-neutral-600">
+                      (most played first)
+                    </span>
+                  </h3>
+                  <div className="flex flex-col gap-2 max-h-[50vh] overflow-y-auto no-scrollbar overscroll-contain border border-neutral-800 bg-neutral-950/40 p-2 rounded-xl">
+                    {dbPlayers.length === 0 ? (
+                      <p className="text-sm text-neutral-500 text-center py-4">
+                        No profiles found.
+                      </p>
+                    ) : (
+                      [...dbPlayers]
+                        .sort((a, b) => (b.wins || 0) - (a.wins || 0))
+                        .map((p) => (
+                          <div
+                            key={p.id}
+                            className="flex items-center gap-2 px-3 py-3 rounded-xl bg-neutral-800"
+                          >
+                            {renamingPlayerId === p.id ? (
+                              <div className="flex flex-1 gap-1">
+                                <input
+                                  autoFocus
+                                  value={renameValue}
+                                  onChange={(e) =>
+                                    setRenameValue(e.target.value)
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter")
+                                      handleRenamePlayer(p.id);
+                                    if (e.key === "Escape") {
+                                      setRenamingPlayerId(null);
+                                      setRenameValue("");
+                                    }
+                                  }}
+                                  className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-1 text-base text-white outline-none"
+                                />
+                                <button
+                                  onClick={() => handleRenamePlayer(p.id)}
+                                  className="text-sm bg-blue-600 text-white font-bold px-3 py-1 rounded-lg"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setRenamingPlayerId(null);
+                                    setRenameValue("");
+                                  }}
+                                  className="text-neutral-400 hover:text-white px-1"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() =>
+                                    assignPlayerToSlot(activeMenuSlot, p)
+                                  }
+                                  className="flex-1 flex justify-between items-center text-base text-neutral-200 hover:text-white"
+                                >
+                                  <span className="truncate">{p.name}</span>
+                                  <span className="text-xs bg-neutral-900 px-2 py-1 rounded-md border border-neutral-700/50 text-amber-400 font-medium shrink-0 ml-2">
+                                    🏆 {p.wins || 0}
+                                  </span>
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setRenamingPlayerId(p.id);
+                                    setRenameValue(p.name);
+                                  }}
+                                  className="p-2 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-700"
+                                >
+                                  <Settings size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeletePlayer(p.id)}
+                                  className="p-2 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-neutral-700"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        ))
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2 bg-neutral-950 p-3 border border-neutral-800 rounded-xl">
+                  <div className="flex justify-between items-center border-b border-neutral-800/60 pb-2">
+                    {renamingPlayerId === activeMenuPlayer.id ? (
+                      <div className="flex flex-1 gap-1 mr-2">
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              handleRenamePlayer(activeMenuPlayer.id);
+                            if (e.key === "Escape") {
+                              setRenamingPlayerId(null);
+                              setRenameValue("");
+                            }
+                          }}
+                          className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-0.5 text-sm text-white outline-none"
+                        />
+                        <button
+                          onClick={() =>
+                            handleRenamePlayer(activeMenuPlayer.id)
+                          }
+                          className="text-xs bg-blue-600 text-white font-bold px-2 py-1 rounded-lg"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => {
+                            setRenamingPlayerId(null);
+                            setRenameValue("");
+                          }}
+                          className="text-neutral-400 px-1"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl font-bold text-blue-400">
+                          {activeMenuPlayer.name}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setRenamingPlayerId(activeMenuPlayer.id);
+                            setRenameValue(activeMenuPlayer.name);
+                          }}
+                          className="p-1.5 text-neutral-500 hover:text-blue-400 rounded-lg hover:bg-neutral-800"
+                        >
+                          <Settings size={16} />
+                        </button>
+                      </div>
+                    )}
+                    <span className="text-sm text-amber-400 font-bold bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                      🏆 {activeMenuPlayer.wins || 0} Wins
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center gap-2 pt-2">
+                    <button
+                      onClick={() => {
+                        const slot = slots.find(
+                          (s) => s.id === activeMenuSlot,
+                        );
+                        if (slot) openWinScreen(slot);
+                      }}
+                      className="text-sm bg-amber-600 hover:bg-amber-500 text-white font-bold px-4 py-2 rounded-lg shadow-md transition-all active:scale-95"
+                    >
+                      Record Match Win 🎉
+                    </button>
+                    <button
+                      onClick={() =>
+                        setSlots((prev) =>
+                          prev.map((s) =>
+                            s.id === activeMenuSlot
+                              ? { ...s, player: null, bgImage: "" }
+                              : s,
+                          ),
+                        )
+                      }
+                      className="flex items-center gap-1.5 text-xs font-bold text-neutral-300 bg-neutral-800 hover:bg-red-900/40 hover:text-red-400 border border-neutral-700 hover:border-red-800/60 px-3 py-2 rounded-lg transition-all active:scale-95"
+                    >
+                      <UserMinus size={13} />
+                      Unlink
+                    </button>
+                  </div>
+                </div>
+
+                {/* Browsing existing favorites and adding new art are two
+                    different jobs — splitting them into tabs instead of one
+                    long stacked column is what actually fixes "scatterbrained". */}
+                <div className="grid grid-cols-2 gap-1.5 bg-neutral-950 p-1 rounded-xl border border-neutral-800">
+                  <button
+                    onClick={() => {
+                      setDrawerTab("favorites");
+                      setShowCustomUpload(false);
+                    }}
+                    className={`py-2 rounded-lg font-bold text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-1.5 ${
+                      drawerTab === "favorites"
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    <Star size={13} /> Favorites
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDrawerTab("add");
+                      setArmedDeleteFavId(null);
+                    }}
+                    className={`py-2 rounded-lg font-bold text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-1.5 ${
+                      drawerTab === "add"
+                        ? "bg-blue-600 text-white"
+                        : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900"
+                    }`}
+                  >
+                    <Plus size={13} /> Add New
+                  </button>
+                </div>
+
+                {drawerTab === "favorites" && (
+                  <div>
+                  {visibleFavorites.length === 0 ? (
+                    <p className="text-xs text-neutral-600 italic py-1">
+                      {favoritesError
+                        ? "Couldn't load this player's commanders — reopen to retry."
+                        : "No favorited commanders yet."}
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
+                      {visibleFavorites.map((fav) => {
+                        const isArmed = armedDeleteFavId === fav.id;
+                        return (
+                          <div
+                            key={fav.id}
+                            className={`relative group w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border transition-all select-none ${
+                              isArmed
+                                ? "border-red-500"
+                                : "border-neutral-800 hover:border-yellow-500"
+                            }`}
+                            // Long press (500ms) arms this card for deletion
+                            // instead of an always-visible X button. A short
+                            // tap while armed confirms the delete; a short
+                            // tap anywhere else dismisses the armed state
+                            // and still performs its own normal action —
+                            // same forgiving pattern as the rest of the app's
+                            // press-and-hold controls (no confirm() dialog
+                            // needed, the gesture itself is the confirmation).
+                            // Also tracks how far the finger has moved since
+                            // pointerdown: scrolling this grid means dragging
+                            // across a card, and without this check that drag
+                            // was being misread as either a tap-to-select
+                            // (fast flick) or a long-press-to-arm (slow drag).
+                            onPointerDown={(e) => {
+                              favJustArmed.current = false;
+                              e.currentTarget.dataset.dragged = "";
+                              e.currentTarget.dataset.startX = e.clientX;
+                              e.currentTarget.dataset.startY = e.clientY;
+                              const timer = setTimeout(() => {
+                                favJustArmed.current = true;
+                                setArmedDeleteFavId(fav.id);
+                              }, 500);
+                              e.currentTarget.dataset.timer = timer;
+                            }}
+                            onPointerMove={(e) => {
+                              const startX = parseFloat(
+                                e.currentTarget.dataset.startX,
+                              );
+                              const startY = parseFloat(
+                                e.currentTarget.dataset.startY,
+                              );
+                              if (Number.isNaN(startX) || Number.isNaN(startY))
+                                return;
+                              const moved = Math.hypot(
+                                e.clientX - startX,
+                                e.clientY - startY,
+                              );
+                              if (moved > 10) {
+                                // The finger is scrolling the list, not
+                                // tapping or holding this card — cancel the
+                                // long-press arm and mark this gesture so the
+                                // eventual pointerUp is ignored.
+                                clearTimeout(
+                                  parseInt(e.currentTarget.dataset.timer),
+                                );
+                                e.currentTarget.dataset.dragged = "1";
+                              }
+                            }}
+                            onPointerUp={(e) => {
+                              clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                              if (e.currentTarget.dataset.dragged === "1") {
+                                favJustArmed.current = false;
+                                return;
+                              }
+                              if (favJustArmed.current) {
+                                // Tail end of the long-press gesture that just
+                                // armed this card — not a new tap.
+                                favJustArmed.current = false;
+                                return;
+                              }
+                              if (isArmed) {
+                                handleDeleteFavorite(fav.id);
+                              } else {
+                                if (armedDeleteFavId !== null)
+                                  setArmedDeleteFavId(null);
+                                handleSelectExistingFavorite(fav);
+                              }
+                            }}
+                            onPointerLeave={(e) => {
+                              clearTimeout(parseInt(e.currentTarget.dataset.timer));
+                            }}
+                          >
+                            <img
+                              src={resolveArt(fav.image_url)}
+                              alt={fav.commander_name}
+                              className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
+                            <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
+                              {fav.commander_name}
+                            </span>
+                            {isArmed && (
+                              <div className="absolute inset-0 bg-red-600/85 flex flex-col items-center justify-center gap-1">
+                                <X size={22} className="text-white" />
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-white">
+                                  Tap to Delete
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  </div>
+                )}
+
+                {drawerTab === "add" && (
+                <div className="flex flex-col gap-4">
+                  {/* Search is the primary, default way to add a commander —
+                      simple and visual instead of a form full of fields. */}
+                  <form onSubmit={handleScryfallSearch} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search for a commander (e.g. Edgar Markov)"
+                      className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-base outline-none focus:border-neutral-600 text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all"
+                    >
+                      {isSearching ? (
+                        <Loader2 size={20} className="animate-spin" />
+                      ) : (
+                        <Search size={20} />
+                      )}
+                    </button>
+                  </form>
+
+                  {/* Printings picker — shown after tapping a search result
+                      that has more than one printing, so a specific art can
+                      be chosen instead of always saving whichever one
+                      Scryfall's default search returned. */}
+                  {printingsOptions ? (
+                    <div>
+                      <div className="flex items-center justify-between px-0.5 pb-2">
+                        <span className="text-sm font-bold text-neutral-300">
+                          Choose art for {printingsForName}
+                        </span>
+                        <button
+                          onClick={() => setPrintingsOptions(null)}
+                          className="p-1.5 text-neutral-500 hover:text-white rounded-full hover:bg-neutral-800"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
+                        {printingsOptions.map((print) => {
+                          const img =
+                            print.image_uris?.art_crop ||
+                            print.card_faces?.[0]?.image_uris?.art_crop ||
+                            "";
+                          return (
+                            <button
+                              key={print.id}
+                              onClick={() => handleSelectCommander(print)}
+                              className="relative w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group"
+                            >
+                              {img && (
+                                <img
+                                  src={img}
+                                  className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
+                                  alt={print.set_name || ""}
+                                />
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/5 to-transparent" />
+                              <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
+                                {print.set_name}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    (searchResults.length > 0 || isLoadingPrintings) && (
+                      <div className="grid grid-cols-2 gap-3 max-h-[55vh] overflow-y-auto no-scrollbar overscroll-contain pr-0.5">
+                        {searchResults.map((card) => {
+                          const img =
+                            card.image_uris?.art_crop ||
+                            card.card_faces?.[0]?.image_uris?.art_crop ||
+                            "";
+                          return (
+                            <button
+                              key={card.id}
+                              disabled={isLoadingPrintings}
+                              onClick={() => handleCardClick(card)}
+                              className="relative w-full pb-[66.6667%] gpu-layer rounded-xl overflow-hidden border border-neutral-800 hover:border-yellow-500 transition-all group disabled:opacity-50"
+                            >
+                              {img && (
+                                <img
+                                  src={img}
+                                  className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-all"
+                                  alt=""
+                                />
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent" />
+                              <span className="absolute bottom-1.5 left-1.5 right-1.5 text-xs font-bold truncate text-left">
+                                {card.name}
+                              </span>
+                              {isLoadingPrintings && (
+                                <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                  <Loader2
+                                    size={22}
+                                    className="animate-spin text-white"
+                                  />
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
+
+                  {/* Custom art upload — a secondary path, tucked behind a
+                      toggle so the default view stays simple: search first. */}
+                  <div className="border-t border-neutral-800/60 pt-3">
+                    {showCustomUpload ? (
+                      <>
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+                            Upload Custom Art
+                          </h3>
+                          <button
+                            onClick={() => setShowCustomUpload(false)}
+                            className="p-1 text-neutral-500 hover:text-white rounded-full hover:bg-neutral-800"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                        <form
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const name =
+                              e.target.elements.customName.value.trim();
+                            const file =
+                              e.target.elements.customFile.files[0];
+                            if (!name || !file) return;
+                            const currentSlot = slots.find(
+                              (s) => s.id === activeMenuSlot,
+                            );
+                            const formData = new FormData();
+                            formData.append("commander_name", name);
+                            formData.append("image", file);
+                            try {
+                              const res = await fetch(
+                                `${BACKEND_URL}/players/${currentSlot.player.id}/upload-favorite`,
+                                { method: "POST", body: formData },
+                              );
+                              if (res.ok) {
+                                const savedFavorite = await res.json();
+                                e.target.reset();
+                                fetchFavorites(currentSlot.player.id);
+                                setSlots((prev) =>
+                                  prev.map((s) =>
+                                    s.id === activeMenuSlot
+                                      ? {
+                                          ...s,
+                                          bgImage: resolveArt(
+                                            savedFavorite.image_url,
+                                          ),
+                                          commanderName: name,
+                                        }
+                                      : s,
+                                  ),
+                                );
+                                setActiveMenuSlot(null);
+                              } else {
+                                const errBody = await res
+                                  .json()
+                                  .catch(() => ({}));
+                                alert(errBody.error || "Upload failed.");
+                              }
+                            } catch (err) {
+                              console.error("Upload error:", err);
+                            }
+                          }}
+                          className="flex flex-col gap-2"
+                        >
+                          <input
+                            name="customName"
+                            type="text"
+                            placeholder="Commander Name (e.g., Watercolor Grimgrin)"
+                            className="bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-sm outline-none focus:border-neutral-600 text-white"
+                            required
+                          />
+                          <div className="flex gap-2 items-center">
+                            <input
+                              name="customFile"
+                              type="file"
+                              accept="image/*"
+                              className="flex-1 text-xs text-neutral-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-neutral-800 file:text-neutral-200 cursor-pointer"
+                              required
+                            />
+                            <button
+                              type="submit"
+                              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md"
+                            >
+                              Upload
+                            </button>
+                          </div>
+                        </form>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setShowCustomUpload(true)}
+                        className="text-xs font-semibold text-neutral-500 hover:text-neutral-300 transition-colors"
+                      >
+                        + Upload your own custom art instead
+                      </button>
+                    )}
+                  </div>
+                </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 5. GAME HISTORY MODAL */}
+      {showHistory && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
+          onPointerDown={() => setShowHistory(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200 flex items-center gap-2">
+                <Star size={16} className="text-yellow-500 fill-yellow-500" />{" "}
+                Game History
+              </h2>
+              <button
+                onClick={() => setShowHistory(false)}
+                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex flex-col gap-2 overflow-y-auto no-scrollbar overscroll-contain">
+              {gameHistory.length === 0 ? (
+                <p className="text-sm text-neutral-500 text-center py-8 italic">
+                  No games recorded yet.
+                </p>
+              ) : (
+                gameHistory.map((game) => (
+                  <div
+                    key={game.id}
+                    className="flex items-center justify-between bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3"
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-sm font-bold text-amber-400">
+                        🏆 {game.winner_name}
+                      </span>
+                      <span className="text-[11px] text-neutral-500">
+                        {game.player_count}P • {formatGameDate(game.played_at)}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteGameEntry(game.id)}
+                      className="p-1.5 text-neutral-600 hover:text-red-400 hover:bg-neutral-800 rounded-lg transition-all"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. PLAYER STATS MODAL */}
+      {showStats && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
+          onPointerDown={() => setShowStats(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-sm rounded-2xl p-5 flex flex-col gap-4 max-h-[85vh] shadow-2xl overflow-y-auto no-scrollbar overscroll-contain"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200 flex items-center gap-2">
+                <BarChart3 size={16} className="text-blue-400" /> Player Stats
+              </h2>
+              <button
+                onClick={() => setShowStats(false)}
+                className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3">
+              <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+                Games Logged
+              </span>
+              <span className="text-2xl font-black text-white tabular-nums">
+                {gameHistory.length}
+              </span>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                Leaderboard
+              </h3>
+              <div className="flex flex-col gap-1.5">
+                {leaderboard.length === 0 ? (
+                  <p className="text-xs text-neutral-500 italic py-2">
+                    No profiles yet.
+                  </p>
+                ) : (
+                  leaderboard.map((p, i) => {
+                    const streak = getWinStreak(p.id);
+                    return (
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-black text-neutral-600 w-5">
+                            #{i + 1}
+                          </span>
+                          <span className="text-sm font-bold text-neutral-200">
+                            {p.name}
+                          </span>
+                          {streak >= 2 && (
+                            <span className="text-[10px] font-bold text-orange-400">
+                              🔥 {streak}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-amber-400 font-bold tabular-nums">
+                          🏆 {p.wins || 0}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {Object.keys(podBreakdown).length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2">
+                  Games by Pod Size
+                </h3>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[2, 3, 4, 5].map((n) => (
+                    <div
+                      key={n}
+                      className="flex flex-col items-center bg-neutral-950 border border-neutral-800 rounded-xl py-2"
+                    >
+                      <span className="text-[10px] font-bold text-neutral-500 uppercase">
+                        {n}P
+                      </span>
+                      <span className="text-lg font-black text-white tabular-nums">
+                        {podBreakdown[n] || 0}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 8. COIN FLIP & DICE MODAL */}
+      {showCoinFlip && (
+        <div
+          className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center p-4 kb-safe"
+          onPointerDown={() => setShowCoinFlip(false)}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 w-full max-w-xs rounded-2xl p-5 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar overscroll-contain"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+              <h2 className="text-lg font-bold text-neutral-200">
+                🪙 Coin Flip & Dice
+              </h2>
+              <button
+                onClick={() => setShowCoinFlip(false)}
+                className="p-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-full transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-semibold text-neutral-400 block mb-1.5">
+                Count (coins or dice)
+              </label>
+              <div className="flex items-center gap-3 justify-center">
+                <button
+                  onClick={() => setCoinFlipCount((c) => Math.max(1, c - 1))}
+                  className="w-10 h-10 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-black text-xl text-neutral-200 active:scale-90 transition-all"
+                >
+                  −
+                </button>
+                <span className="text-3xl font-black text-white w-12 text-center tabular-nums">
+                  {coinFlipCount}
+                </span>
+                <button
+                  onClick={() => setCoinFlipCount((c) => Math.min(20, c + 1))}
+                  className="w-10 h-10 bg-neutral-800 hover:bg-neutral-700 rounded-xl font-black text-xl text-neutral-200 active:scale-90 transition-all"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setIsFlipping(true);
+                setCoinFlipResults([]);
+                setDiceResults(null);
+                setTimeout(() => {
+                  const results = Array.from({ length: coinFlipCount }, () =>
+                    Math.random() < 0.5 ? "heads" : "tails",
+                  );
+                  setCoinFlipResults(results);
+                  setIsFlipping(false);
+                }, 600);
+              }}
+              disabled={isFlipping || isRollingDice}
+              className="w-full py-3 bg-yellow-600 hover:bg-yellow-500 disabled:bg-neutral-800 text-white font-black rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+            >
+              {isFlipping
+                ? "Flipping..."
+                : `Flip ${coinFlipCount === 1 ? "1 Coin" : `${coinFlipCount} Coins`}`}
+            </button>
+
+            <div className="grid grid-cols-2 gap-2">
+              {[6, 20].map((sides) => (
+                <button
+                  key={sides}
+                  onClick={() => {
+                    setIsRollingDice(true);
+                    setCoinFlipResults([]);
+                    setDiceResults(null);
+                    setTimeout(() => {
+                      const values = Array.from(
+                        { length: coinFlipCount },
+                        () => 1 + Math.floor(Math.random() * sides),
+                      );
+                      setDiceResults({ sides, values });
+                      setIsRollingDice(false);
+                    }, 600);
+                  }}
+                  disabled={isFlipping || isRollingDice}
+                  className="py-3 bg-indigo-700 hover:bg-indigo-600 disabled:bg-neutral-800 text-white font-black rounded-xl flex items-center justify-center gap-2 text-sm shadow-md active:scale-95 transition-all"
+                >
+                  🎲 Roll d{sides}
+                </button>
+              ))}
+            </div>
+
+            {isRollingDice && (
+              <p className="text-center text-xs text-neutral-500 animate-pulse">
+                Rolling...
+              </p>
+            )}
+
+            {coinFlipResults.length > 0 && !isFlipping && (
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between text-xs font-bold px-1">
+                  <span className="text-yellow-400">
+                    👑 Heads:{" "}
+                    {coinFlipResults.filter((r) => r === "heads").length}
+                  </span>
+                  <span className="text-neutral-400">
+                    Tails: {coinFlipResults.filter((r) => r === "tails").length}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar overscroll-contain">
+                  {coinFlipResults.map((result, i) => (
+                    <div
+                      key={i}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center text-lg border-2 ${
+                        result === "heads"
+                          ? "bg-yellow-500/20 border-yellow-500/50"
+                          : "bg-neutral-800 border-neutral-700"
+                      }`}
+                    >
+                      {result === "heads" ? "👑" : "🌑"}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {diceResults && !isRollingDice && (
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between text-xs font-bold px-1">
+                  <span className="text-indigo-300">
+                    d{diceResults.sides} × {diceResults.values.length}
+                  </span>
+                  {diceResults.values.length > 1 && (
+                    <span className="text-neutral-400">
+                      Total: {diceResults.values.reduce((a, b) => a + b, 0)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar overscroll-contain">
+                  {diceResults.values.map((v, i) => (
+                    <div
+                      key={i}
+                      className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black tabular-nums border-2 bg-indigo-500/20 border-indigo-500/50 text-white"
+                    >
+                      {v}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 9. WIN SCREEN — pending until confirmed, so nothing hits the
+          database on an accidental tap. */}
+      {winner && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center">
+          {winner.bgImage && (
+            <div
+              className="absolute inset-0 bg-cover bg-center"
+              style={{
+                backgroundImage: `url(${winner.bgImage})`,
+                filter: "brightness(0.3) blur(8px) saturate(1.5)",
+                transform: "scale(1.05)",
+              }}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/60" />
+          <div className="relative z-10 flex flex-col items-center gap-6 px-8 text-center">
+            <div className="text-6xl animate-bounce">👑</div>
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-xs font-black uppercase tracking-[0.3em] text-yellow-400/80">
+                {winConfirmed ? "Winner" : "Victory?"}
+              </span>
+              <span className="text-5xl font-black text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.9)]">
+                {winner.player ? winner.player.name : getShortName(winner)}
+              </span>
+              {winner.commanderName && (
+                <span className="text-sm font-bold text-neutral-400 uppercase tracking-widest mt-1">
+                  {winner.commanderName}
+                </span>
+              )}
+              {isTeamGame ? (
+                <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-widest mt-1">
+                  Team game — not recorded
+                </span>
+              ) : (
+                !winner.player && (
+                  <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-widest mt-1">
+                    No profile linked — win won't be recorded
+                  </span>
+                )
+              )}
+            </div>
+
+            {winConfirmed ? (
+              <>
+                {winner.player && (
+                  <span className="text-sm text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full">
+                    🏆 {winnerLifetimeWins} lifetime wins
+                  </span>
+                )}
+                <div className="flex flex-col gap-2 items-center">
+                  <button
+                    onClick={() => {
+                      setShowControlHub(true);
+                      setWinner(null);
+                      setWinConfirmed(false);
+                    }}
+                    className="mt-2 px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
+                  >
+                    Reset & Roll Next Game
+                  </button>
+                  <button
+                    onClick={() => {
+                      setWinner(null);
+                      setWinConfirmed(false);
+                    }}
+                    className="text-xs text-neutral-400 underline hover:text-white transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col gap-2 items-center">
+                <button
+                  onClick={confirmWin}
+                  disabled={savingWin}
+                  className="px-8 py-3 bg-amber-600 hover:bg-amber-500 disabled:bg-amber-800 disabled:opacity-70 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-all"
+                >
+                  {savingWin ? "Recording…" : "Confirm Win 🏆"}
+                </button>
+                {winError && (
+                  <span className="max-w-xs text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-4 py-1.5 rounded-xl">
+                    Couldn't record the win: {winError}. Tap Confirm to retry.
+                  </span>
+                )}
+                <button
+                  onClick={() => {
+                    // Cancel without recording anything. autoWinTriggered
+                    // stays set and re-arms once more than one player is
+                    // back above 0 (see the auto-win effect).
+                    setWinner(null);
+                    setWinConfirmed(false);
+                  }}
+                  className="text-xs text-neutral-400 underline hover:text-white transition-colors"
+                >
+                  Cancel — nothing recorded
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {showDebugOverlay && debugInfo && (
+        <div
+          className="fixed z-[9999] top-0 left-0 bg-black/85 text-lime-400 text-[10px] leading-tight font-mono p-2 pointer-events-none whitespace-pre"
+          style={{ paddingTop: "env(safe-area-inset-top)" }}
+        >
+          {`DEBUG (?debug=1)
+orientation: ${debugInfo.orientation}
+inner: ${debugInfo.innerW} x ${debugInfo.innerH}
+screen: ${debugInfo.screenW} x ${debugInfo.screenH}
+visualViewport: ${debugInfo.vvW} x ${debugInfo.vvH}
+dpr: ${debugInfo.dpr}  standalone: ${String(debugInfo.standalone)}
+safe-area top/right/bottom/left:
+  ${debugInfo.sat} / ${debugInfo.sar} / ${debugInfo.sab} / ${debugInfo.sal}
+root padding T/R/B/L:
+  ${debugInfo.padT} / ${debugInfo.padR} / ${debugInfo.padB} / ${debugInfo.padL}
+root box/content/scroll H:
+  ${debugInfo.boxH} / ${debugInfo.contentH} / ${debugInfo.scrollH}
+root rect top/left: ${debugInfo.rectTop} / ${debugInfo.rectLeft}
+body/html rect top: ${debugInfo.bodyTop} / ${debugInfo.htmlTop}
+body/html offsetH:  ${debugInfo.bodyH} / ${debugInfo.htmlH}
+scrollY ${debugInfo.scrollY}  vv offsetTop ${debugInfo.vvTop}  pageTop ${debugInfo.vvPage}`}
+        </div>
+      )}
+    </div>
+  );
+}
